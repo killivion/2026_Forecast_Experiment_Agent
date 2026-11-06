@@ -1,0 +1,5 @@
+anthropic
+pyyaml
+pandas
+python-dotenv
+pytest

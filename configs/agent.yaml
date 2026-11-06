@@ -1,0 +1,12 @@
+# Agent settings. Values are filled in during Phases 1-3.
+gefcom_path: ../GEFCOM2014
+gefcom_python: ../GEFCOM2014/.venv/Scripts/python.exe
+base_config: configs/dev.yaml      # relative to gefcom_path
+model: claude-sonnet-5-5
+budget:
+  experiments: 20
+  wall_minutes: null               # set after Phase 0 timing
+  tokens: null
+accept_rule:
+  noise_threshold: null            # your decision, Phase 2
+  min_month_wins: 4                # of 7 dev months
