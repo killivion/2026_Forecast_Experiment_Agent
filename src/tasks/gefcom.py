@@ -92,8 +92,10 @@ def config_hash(config: dict[str, Any], tier: Tier, gefcom_commit: str) -> str:
 
 
 def _gefcom_commit(gefcom_path: Path) -> str:
-    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=gefcom_path, capture_output=True, text=True)
-    return result.stdout.strip() or "unknown"
+    # check=True: without a commit the cache key could silently mix GEFCom versions.
+    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=gefcom_path, capture_output=True, text=True,
+                            check=True)
+    return result.stdout.strip()
 
 
 def _run_gefcom(python: Path, gefcom_path: Path, config_path: Path, output_dir: str, log_path: Path) -> float:
@@ -104,7 +106,7 @@ def _run_gefcom(python: Path, gefcom_path: Path, config_path: Path, output_dir: 
         proc = subprocess.run(cmd, cwd=gefcom_path, capture_output=True, encoding="utf-8",
                               errors="replace", timeout=TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        raise GefcomRunError(f"run_comparison timed out after {TIMEOUT_S} s (log: {log_path})")
+        raise GefcomRunError(f"run_comparison timed out after {TIMEOUT_S} s")
     log_path.write_text(f"$ {' '.join(cmd)}\n\n--- stdout\n{proc.stdout}\n--- stderr\n{proc.stderr}",
                         encoding="utf-8")
     if proc.returncode != 0:
@@ -132,6 +134,7 @@ def evaluate(overrides: dict[str, Any], tier: Tier) -> EvalResult:
 
     cache_path = CACHE_DIR / f"{name}.json"
     if cache_path.exists():
+        # runtime_s and run_dir are the original run's; run_dir may since have been deleted.
         stored = json.loads(cache_path.read_text())["result"]
         stored["fold_losses"] = {int(k): v for k, v in stored["fold_losses"].items()}
         return EvalResult(**{**stored, "cached": True})

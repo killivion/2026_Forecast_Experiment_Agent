@@ -15,6 +15,8 @@
 | Two tiers: **fast** (9 quantiles, 7 scenario shifts `[-6,-4,-2,0,2,4,6]`) for search, **confirm** (dev.yaml's 20 quantiles) for checking | A full dev run takes ~6.5 min, too slow for 20 experiments × 6 searches. The fast grid keeps 0.05/0.95 because GEFCom's coverage metric looks those levels up by value. The shift grid keeps 0 (the unshifted scenario) |
 | The tier owns the quantile grid, and an explicit `shift_days` override wins over thinning | Otherwise an override could break the coverage metric, or the fast tier would silently undo an experiment on the shift window |
 | Fast and confirm losses are never compared | Different quantile grids give different loss scales. Same reason the human 8.78 (99 quantiles) is not comparable to dev.yaml's 8.43 (20 quantiles) |
+| Human reference numbers: **8.43** on the dev grid (confirm tier), **8.78** dev / **6.79** holdout on 99 quantiles | From GEFCOM2014/README.md (experiment log and ablation table). Search results are compared with 8.43; the final once-only evaluation uses 99 quantiles and is compared with 8.78 / 6.79 |
+| Failing `git rev-parse` in GEFCom is a hard error | A fallback key would let results from different GEFCom versions share a cache entry |
 | Cache key = GEFCom git commit + tier + merged config, stored as JSON in `runs/cache/` | The same config never runs twice; a code change in GEFCom invalidates old results automatically. Uncommitted GEFCom edits are **not** detected |
 | Failed runs raise `GefcomRunError` and are never cached; 30 min timeout | The agent sees the error text as the tool result; a hung run can't block a search |
 | No key validation in the adapter | That is the guardrails' job (Phase 2): the adapter would run `temperature_source: actual` as-is |

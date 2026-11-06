@@ -16,8 +16,8 @@ GEFCom2014 is expected at `../GEFCOM2014` with its own venv (see `configs/agent.
 ## Layout
 - `src/tasks/gefcom.py`: black-box adapter, `evaluate(overrides, tier)` (tier `fast` = 9 quantiles for search, `confirm` = 20), cached in `runs/cache/`
 - `scripts/proxy_check.py`: checks the fast tier ranks configs like the confirm tier (`python -m scripts.proxy_check`, ~40 min)
-- `src/search_space.py`, `src/guardrails.py`: allowed overrides, accept rule, leakage checks
-- `src/agent.py`, `src/tools.py`: tool-use loop
-- `src/random_search.py`: baseline searcher
+- `src/search_space.py`, `src/guardrails.py`: allowed overrides, accept rule, leakage checks (planned, Phase 2)
+- `src/agent.py`, `src/tools.py`: tool-use loop (planned, Phase 3)
+- `src/random_search.py`: baseline searcher (planned, Phase 4)
 - `runs/`: per-run `log.jsonl` (gitignored)
 - `tests/`: `python -m pytest tests -q` (subprocess mocked, no GEFCom run)
