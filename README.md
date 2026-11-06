@@ -2,7 +2,7 @@
 
 An LLM agent that runs the modelling loop on the GEFCom2014 load-forecasting harness: it states a hypothesis, changes the config, runs a backtest on the development folds, keeps or drops the change, and stops when the budget runs out. The best config is then scored once on the holdout and extended folds, and compared against random search and my own hand-tuned experiment log.
 
-**Status:** Phase 1 in progress (GEFCom adapter with fast/confirm tiers; proxy check running). There are no results yet. See [PLAN.md](PLAN.md).
+**Status:** Phase 1 done: GEFCom adapter with a fast tier that ranks configs like the full dev run (proxy check in NOTES.md). Next: Phase 2 (search space, guardrails). See [PLAN.md](PLAN.md).
 
 ## Setup
 ```

@@ -29,7 +29,20 @@
 
 ## Fast-tier proxy check (Phase 1)
 `python -m scripts.proxy_check` runs plain / recency only / scenarios only / final in both tiers. It compares the ranking by dev loss and, for each pair, whether the 4-of-7 month verdict is the same in both tiers (the accept rule depends on it). Sanity value: confirm "final" should reproduce 8.43.
-_Result pending._
+**Result (2026-11-06): the fast tier is a valid proxy.**
+
+| config | fast loss | rank | fast min | confirm loss | rank | confirm min |
+|---|---|---|---|---|---|---|
+| plain | 8.863 | 4 | 0.9 | 9.165 | 4 | 2.4 |
+| recency only | 8.490 | 3 | 3.1 | 8.770 | 3 | 9.2 |
+| scenarios only | 8.281 | 2 | 1.2 | 8.609 | 2 | 3.1 |
+| final | 8.109 | 1 | 3.8 | 8.432 | 1 | 167.6* |
+
+- **Ranking:** identical in both tiers, and the same as the human 99-quantile ablation. All 6 pairwise 4-of-7 verdicts agree across tiers. The month-win counts differ by at most 1 (recency vs scenarios: 2 vs 3, both below 4).
+- **Sanity check:** confirm "final" reproduces 8.432, the human dev-grid result (8.43).
+- **Fast tier is 2.6–3× faster** than confirm. Recency weighting is the expensive part: it makes runs ~3× slower in both tiers.
+- \* **Wall-time anomaly:** the confirm "final" run took 168 min, against 6.2 min for the same config in Phase 0. No GEFCom error was logged, so it was probably the machine (sleep or contention), not the config. **Consequence:** the 30 min timeout and the wall-time budget protect against this, but it is why runtimes in the logs should be read with care.
+- **Budget:** a fast run takes 1–4 min, so 20 experiments ≈ 40–80 min per search. `wall_minutes` is set to 120.
 
 ## Results
 _None yet._
