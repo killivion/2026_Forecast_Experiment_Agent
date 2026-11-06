@@ -5,7 +5,7 @@ base_config: configs/dev.yaml      # relative to gefcom_path
 model: claude-sonnet-5-5
 budget:
   experiments: 20
-  wall_minutes: null               # set after Phase 0 timing
+  wall_minutes: null               # set after fast-tier timing (Phase 1); full dev run ~6.5 min
   tokens: null
 accept_rule:
   noise_threshold: null            # your decision, Phase 2
