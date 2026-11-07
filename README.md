@@ -15,6 +15,12 @@ copy .env.example .env   # then add ANTHROPIC_API_KEY
 ```
 GEFCom2014 is expected at `../GEFCOM2014` with its own venv (see `configs/agent.yaml`).
 
+## Cost
+Only the agent's Claude API calls cost money, billed to the Console account of the key in `.env` (a claude.ai Pro plan doesn't cover the API). Random search and GEFCom run locally for free.
+- **Hard ceiling:** buy a small prepaid balance in the Anthropic Console, keep auto-reload off, and set a workspace spend limit.
+- **Test runs cost cents:** `python -m src.agent --seed 0 --budget 3 --model claude-haiku-5-5`.
+- **Tracked searches:** Sonnet 5.5 at medium effort, about $0.6–1.2 each, capped at $2 per search in `configs/agent.yaml`. The whole MVP comes to about $3–5 (estimates; every call's exact cost is in the run log). Details in [NOTES.md](NOTES.md#cost-decided-2026-11-07).
+
 ## Layout
 - `src/tasks/gefcom.py`: black-box adapter, `evaluate(overrides, tier)` (tier `fast` = 9 quantiles and every second scenario shift day, for search; `confirm` = dev.yaml's 20 quantiles), cached in `runs/cache/`
 - `scripts/proxy_check.py`: checks the fast tier ranks configs like the confirm tier (`python -m scripts.proxy_check`, ~40 min)
@@ -22,8 +28,8 @@ GEFCom2014 is expected at `../GEFCOM2014` with its own venv (see `configs/agent.
 - `src/guardrails.py`: `check_proposal` (leakage and invalid proposals, with a reason the searcher sees) and the hard `Budget`
 - `src/tools.py`: the five agent tools (schemas + handlers) and the experiment core both searchers share: guardrails, duplicate check, evaluation, accept rule, log
 - `src/logging_utils.py`: the run log `runs/<run_id>/log.jsonl` (event format in its docstring)
-- `src/agent.py`: the manual Claude tool-use loop, `python -m src.agent --seed 0 [--budget 3]` (Phase 3 step 2: not run yet)
+- `src/agent.py`: the manual Claude tool-use loop, `python -m src.agent --seed 0 [--budget 3] [--model claude-haiku-5-5]` (Phase 3 step 2: not run against the API yet)
 - `src/random_search.py`: baseline searcher with the same space, budget, accept rule and log, `python -m src.random_search --seed 0 [--budget 3]` (Phase 4)
-- `scripts/final_eval.py`: scores each finished search's best config once on unseen folds, `python -m scripts.final_eval --folds holdout` (then `--folds extended --runs <id> ...`), into `results/summary.csv` with a human reference row
+- `scripts/final_eval.py`: scores the named searches' best configs once on unseen folds, `python -m scripts.final_eval --folds holdout --runs <id> ...` (then `--folds extended` for the best ones), into `results/summary.csv` with a human reference row
 - `runs/`: per-run `log.jsonl` (gitignored)
 - `tests/`: `python -m pytest tests -q` (subprocess mocked, no GEFCom run)

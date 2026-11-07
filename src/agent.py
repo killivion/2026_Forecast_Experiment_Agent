@@ -17,7 +17,7 @@ from typing import Any, cast
 
 import anthropic
 import yaml
-from anthropic.types import Message, MessageParam
+from anthropic.types import Message, MessageParam, Usage
 from dotenv import load_dotenv
 
 from src import tools
@@ -32,14 +32,15 @@ SYSTEM = (
     "unlikely to beat the best, or when the budget is used up."
 )
 KICKOFF = "Start the search. Read the task and the search space first."
+LONG_PROMPT_TOKENS = 100_000  # above this, Haiku 5.5 switches to its higher rate card
 
 
-def run(seed: int, experiments: int | None = None) -> tools.SearchState:
+def run(seed: int, experiments: int | None = None, model: str | None = None) -> tools.SearchState:
     """seed only labels the run: the API has no seed and Sonnet 5.5 takes no temperature (NOTES.md).
-    experiments overrides the experiment budget from agent.yaml."""
+    experiments and model override agent.yaml, e.g. for a cheap test run with Haiku."""
     load_dotenv(REPO_ROOT / ".env")
     settings = yaml.safe_load((REPO_ROOT / "configs" / "agent.yaml").read_text(encoding="utf-8"))
-    model: str = settings["model"]
+    model = model or settings["model"]
     prices: dict[str, float] = settings["price_per_mtok"][model]
     state = tools.start_search(f"agent_s{seed}_{datetime.now():%Y%m%d-%H%M%S}", "agent", seed, model, experiments)
     client = anthropic.Anthropic(max_retries=5)  # the SDK retries 429/5xx and connection errors
@@ -53,7 +54,9 @@ def run(seed: int, experiments: int | None = None) -> tools.SearchState:
                 model=model, max_tokens=64000, system=SYSTEM, tools=tools.TOOLS, messages=messages,
                 thinking={"type": "adaptive", "display": "summarized"},  # summaries go to the log
                 output_config={"effort": settings["effort"]},
-                cache_control={"type": "ephemeral"},  # caches the growing conversation prefix
+                # Caches the growing conversation. 1 h, not the default 5 min: a GEFCom run between two
+                # calls can take longer than 5 min, and a miss rewrites the whole prefix at 12x a cache read.
+                cache_control={"type": "ephemeral", "ttl": "1h"},
             ) as stream:
                 response = stream.get_final_message()
         except (anthropic.APIConnectionError, anthropic.RateLimitError, anthropic.InternalServerError) as e:
@@ -87,15 +90,32 @@ def run(seed: int, experiments: int | None = None) -> tools.SearchState:
     return state
 
 
+def call_cost(tokens: dict[str, int], prices: dict[str, float]) -> float:
+    """USD for one call. A model with a long_prompt_factor (Haiku 5.5) bills every token at that
+    multiple when the prompt (input + cache reads + cache writes) exceeds 100K tokens."""
+    prompt = (tokens["input_tokens"] + tokens["cache_read_input_tokens"]
+              + tokens["cache_write_5m_tokens"] + tokens["cache_write_1h_tokens"])
+    factor = prices.get("long_prompt_factor", 1.0) if prompt > LONG_PROMPT_TOKENS else 1.0
+    return factor * (tokens["input_tokens"] * prices["input"] + tokens["output_tokens"] * prices["output"]
+                     + tokens["cache_read_input_tokens"] * prices["cache_read"]
+                     + tokens["cache_write_5m_tokens"] * prices["cache_write_5m"]
+                     + tokens["cache_write_1h_tokens"] * prices["cache_write_1h"]) / 1e6
+
+
+def _tokens(u: Usage) -> dict[str, int]:
+    """input_tokens excludes cached tokens; cache writes are split by lifetime because they are priced differently."""
+    split = u.cache_creation
+    return {"input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
+            "cache_read_input_tokens": u.cache_read_input_tokens or 0,
+            "cache_write_5m_tokens": split.ephemeral_5m_input_tokens if split else 0,
+            # no split reported: every write is from our 1 h cache_control
+            "cache_write_1h_tokens": split.ephemeral_1h_input_tokens if split else u.cache_creation_input_tokens or 0}
+
+
 def _account(state: tools.SearchState, response: Message, prices: dict[str, float]) -> None:
     """Add the call's cost to the budget and log its tokens, text and thinking summaries."""
-    u = response.usage
-    tokens = {"input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
-              "cache_read_input_tokens": u.cache_read_input_tokens or 0,
-              "cache_creation_input_tokens": u.cache_creation_input_tokens or 0}
-    cost = (tokens["input_tokens"] * prices["input"] + tokens["output_tokens"] * prices["output"]
-            + tokens["cache_read_input_tokens"] * prices["cache_read"]
-            + tokens["cache_creation_input_tokens"] * prices["cache_write"]) / 1e6
+    tokens = _tokens(response.usage)
+    cost = call_cost(tokens, prices)
     state.budget.usd += cost
     state.log.write("llm_call", **tokens, cost_usd=cost, stop_reason=response.stop_reason,
                     text=[b.text for b in response.content if b.type == "text"],
@@ -106,7 +126,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0, help="run label (no API seed exists)")
     parser.add_argument("--budget", type=int, help="experiments (default: configs/agent.yaml)")
+    parser.add_argument("--model", help="e.g. claude-haiku-5-5 for a cheap test run (default: configs/agent.yaml)")
     args = parser.parse_args()
-    final = run(args.seed, args.budget)
+    final = run(args.seed, args.budget, args.model)
     print(f"best: experiment {final.best_id}, dev loss {final.best.dev_loss:.3f}, "
           f"leakage attempts blocked: {final.leakage_hits}")

@@ -90,7 +90,7 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 - A rejected proposal is not run and uses no experiment budget. The loop logs it, and the report counts the leakage ones.
 - Second line of defence: the flat space can't express folds or quantiles, and the adapter always passes `--folds development`.
 
-**Budget** (`guardrails.Budget`, values in `configs/agent.yaml`): 20 experiments (proposals that passed the guardrails; the start config isn't one), 180 min wall time as a safety cap that should not bind, $5 of API spend for the agent (~$1–2 expected per search). The spend cap replaced a token cap: with prompt caching most input tokens are cache reads at a tenth of the price, so 1.5M tokens would have bound at about $1. Limits are checked between experiments, so a search can overrun the wall-time cap by at most one run (30 min timeout). The heaviest config (600 trees, depth 7, recency, ±14 days, all dynamics) is estimated at ~15 min in the fast tier, under the timeout.
+**Budget** (`guardrails.Budget`, values in `configs/agent.yaml`): 20 experiments (proposals that passed the guardrails; the start config isn't one), 180 min wall time as a safety cap that should not bind, $2 of API spend for the agent (~$0.6–1.2 expected per search, see Cost). The spend cap replaced a token cap: with prompt caching most input tokens are cache reads at a tenth of the price, so 1.5M tokens would have bound at about $1. Limits are checked between experiments, so a search can overrun the wall-time cap by at most one run (30 min timeout). The heaviest config (600 trees, depth 7, recency, ±14 days, all dynamics) is estimated at ~15 min in the fast tier, under the timeout.
 
 ## Agent tools (Phase 3, step 1)
 | tool | input | design choice |
@@ -109,19 +109,43 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 ## Agent loop (Phase 3, step 2: `src/agent.py`, not run yet)
 - **Manual loop** (`client.messages.create` until `finish`), not the SDK's tool runner: the harness has to check the budgets between turns and price every call.
 - **Append-only history:** every response is appended unchanged (current Claude models tie thinking blocks to the unedited conversation). All tool results of a turn go back in one user message.
-- **Settings:** Claude Sonnet 5.5, effort `high` (the decisions are what is measured), adaptive thinking with `display: summarized` so the reasoning summaries land in the log for the notebook trace, prompt caching on the growing conversation (`cache_control` on the request). Requests are streamed with `max_tokens` 64000, so a long thinking turn can't hit the cap or an HTTP timeout. Tool inputs are tiny, so no eager input streaming.
+- **Settings:** Claude Sonnet 5.5 at effort `medium` (see Cost), adaptive thinking with `display: summarized` so the reasoning summaries land in the log for the notebook trace, prompt caching on the growing conversation with a 1-hour lifetime. Requests are streamed with `max_tokens` 64000, so a long thinking turn can't hit the cap or an HTTP timeout. Tool inputs are tiny, so no eager input streaming. `--model claude-haiku-5-5` for cheap test runs.
 - **Stopping:** the agent calls `finish`; or a budget runs out, then it gets one more turn with "call finish now"; or it ends a turn without a tool call, refuses or hits `max_tokens`. If it never calls `finish`, the harness does, with the reason in the log. The accept rule's best is the result either way.
 - **API errors:** only transient ones (connection, 429, 5xx, after the SDK's 5 retries) end a search normally. A 400 or 401 crashes loudly, so a broken run can't look like a finished one.
 - **Failed GEFCom runs** use budget, show up in `get_history` and count as duplicates afterwards, so a config that timed out (30 min) can't be retried.
 - **No refusal fallback to another model:** the API's server-side fallback would switch models mid-search and blur "Sonnet vs. random". A refusal ends the search and is logged.
 - **`--seed` only labels the run** (no API seed, no temperature), `--budget N` overrides the experiment budget for test runs.
 
+## Cost (decided 2026-11-07)
+- **Who pays:** only the agent's Claude API calls cost money, billed to the Anthropic Console account that owns the API key in `.env` (prepaid credits). A claude.ai Pro plan doesn't cover the API. Random search, GEFCom runs and building the project in Claude Code cost nothing extra.
+- **What a call is:** one decision. It re-sends the whole conversation (cached) and returns thinking plus one tool call. A 20-experiment search makes ~30 calls. Output (thinking) is the biggest cost item, re-reading the cached conversation the second.
+- **Levers taken:**
+  - effort `medium` instead of `high`, because thinking output dominates the bill;
+  - a 1-hour cache instead of the default 5 minutes, because a GEFCom run between two calls can take over 5 minutes, and every miss rewrites the whole prefix at 12× the read price;
+  - Haiku 5.5 (about 20× cheaper) for test runs, Sonnet 5.5 only for the tracked searches;
+  - a $2 cap per search in code;
+  - a prepaid Console balance with auto-reload off as the hard ceiling.
+- **Every call is priced exactly** in the log (`cost_usd`): list prices per model in `agent.yaml`, cache writes split into 5-minute and 1-hour, and Haiku's 5× rate for prompts over 100K tokens.
+- **Rejected:**
+  - Batch API (50% off): calls can take hours, but every decision needs the previous result.
+  - A compact "lab notebook" instead of the full conversation: about break-even with caching, and it changes what the agent sees.
+  - Thinking off (`between_tools`): changes the experiment.
+  - Running development searches on the Pro plan via `claude -p`: that tests Claude Code's loop, not mine, and needs extra glue code, while Haiku test runs cost cents.
+- **Estimates** (the first real run measures the actual split):
+
+| | cost |
+|---|---|
+| Haiku test run (`--budget 3`) | ~$0.01–0.03 |
+| Sonnet search, 20 experiments, medium effort | ~$0.6–1.2 |
+| MVP: ~10 Haiku test runs, 1 Sonnet check, 3 Sonnet searches, 1 re-run buffer | **~$3–5** |
+| Optional: reward-hacking demo (1 search) + one Opus 5.5 comparison search | +~$2–3.5 |
+
 ## Random search (Phase 4: `src/random_search.py`)
 - Every sample is a full config drawn independently from `SEARCH_SPACE`: ints uniform on their step grid, floats uniform, log-uniform for the four log-scale parameters, bool and choice uniform, each temperature-dynamics feature in or out at 50%, nullable parameters null at 50%.
 - It goes through the same `tools.run_experiment` as the agent, as changes against the current best, so same guardrails, duplicate check, accept rule, budget and log. Its best is the accept rule's best, not its lowest-loss sample.
 - The seed alone fixes the samples; with the shared cache a rerun of a seed costs no GEFCom time. Rejected samples use no budget; 100 rejections in a row end the search.
 
-**Fairness agent vs. random search.** Same space, start config, guardrails, duplicate check, accept rule, experiment budget and log. Asymmetries, stated rather than hidden: the $5 cap and the LLM's latency in the wall clock apply to the agent only (neither should bind), and the agent sees per-month losses and the accept reason, which random search ignores by design. That information is what the LLM is supposed to exploit.
+**Fairness agent vs. random search.** Same space, start config, guardrails, duplicate check, accept rule, experiment budget and log. Asymmetries, stated rather than hidden: the $2 cap and the LLM's latency in the wall clock apply to the agent only (neither should bind), and the agent sees per-month losses and the accept reason, which random search ignores by design. That information is what the LLM is supposed to exploit.
 
 **Final evaluation runs only named searches** (`--runs` is required): `runs/` also holds `--budget 3` test runs and early-stopped searches, and `stop_reason` is a column of `results/summary.csv`, so an early-stopped search can't pass as a normal result.
 

@@ -9,8 +9,8 @@ with "time" and "event":
   rejected    changes, hypothesis, category ("leakage" | "invalid" | "duplicate"), reason
   error       id, changes, hypothesis, message, runtime_s   (GEFCom run failed; uses budget)
   llm_call    input_tokens, output_tokens, cache_read_input_tokens,
-              cache_creation_input_tokens, cost_usd, stop_reason, text,
-              thinking (summaries)                           (agent only)
+              cache_write_5m_tokens, cache_write_1h_tokens, cost_usd,
+              stop_reason, text, thinking (summaries)        (agent only)
   finish      best_id, claimed_best_id, rationale, stop_reason, best_params,
               best_dev_loss, experiments, leakage_hits
 """
