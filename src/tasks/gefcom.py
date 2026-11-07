@@ -1,9 +1,9 @@
 """GEFCom2014 adapter: evaluate(overrides, tier) -> EvalResult.
 
 GEFCom is a black box: the overrides are deep-merged into its dev.yaml, the
-tier sets the quantile grid (and thins the temperature-scenario shifts in the
-fast tier), the YAML is written to runs/scratch/, and run_comparison is called
-via subprocess on the development folds only. Results are cached per
+tier sets the quantile grid (and keeps every second temperature-scenario shift
+day in the fast tier), the YAML is written to runs/scratch/, and run_comparison
+is called via subprocess on the development folds only. Results are cached per
 (GEFCom commit, tier, merged config), so the same config never runs twice.
 
 Fast and confirm losses use different quantile grids: never compare them.
@@ -11,10 +11,14 @@ Fast and confirm losses use different quantile grids: never compare them.
 from __future__ import annotations
 
 import copy
+import ctypes
 import hashlib
 import json
 import subprocess
+import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -32,7 +36,9 @@ TIMEOUT_S = 30 * 60
 
 # The fast tier must keep 0.05 and 0.95: GEFCom's coverage metric looks them up by value.
 FAST_QUANTILES = [0.05, 0.10, 0.25, 0.40, 0.50, 0.60, 0.75, 0.90, 0.95]
-FAST_SHIFT_DAYS = [-6, -4, -2, 0, 2, 4, 6]
+
+# SetThreadExecutionState flags (Windows API).
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x00000001, 0x00000002
 
 
 @dataclass(frozen=True)
@@ -73,16 +79,16 @@ def deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any
 
 def build_config(base: dict[str, Any], overrides: dict[str, Any], tier: Tier) -> dict[str, Any]:
     """base + overrides, then the tier rules. The tier owns the quantile grid;
-    in the fast tier, scenario shifts are thinned unless the overrides set them."""
+    the fast tier keeps every second scenario shift day ([-7..7] -> [-6, -4, ..., 6]),
+    so a window-width experiment keeps its width in both tiers."""
     config = deep_merge(base, overrides)
     if tier == "confirm":
         config["quantiles"] = copy.deepcopy(base["quantiles"])
         return config
     config["quantiles"]["levels"] = list(FAST_QUANTILES)
     scenarios = config["model"].get("temperature_scenarios") or {}
-    user_set_shifts = "shift_days" in (overrides.get("model", {}).get("temperature_scenarios") or {})
-    if scenarios.get("enabled") and not user_set_shifts:
-        scenarios["shift_days"] = list(FAST_SHIFT_DAYS)
+    if scenarios.get("enabled"):
+        scenarios["shift_days"] = [s for s in scenarios["shift_days"] if s % 2 == 0]
     return config
 
 
@@ -98,21 +104,43 @@ def _gefcom_commit(gefcom_path: Path) -> str:
     return result.stdout.strip()
 
 
+@contextmanager
+def _keep_awake() -> Iterator[None]:
+    """Windows does not count CPU load as activity: an unattended laptop enters
+    Modern Standby and suspends the run (Phase 1: a ~10 min run took 168 min).
+    DISPLAY_REQUIRED because on Modern Standby the idle screen-off starts standby.
+    Closing the lid still suspends the run."""
+    if sys.platform != "win32":
+        yield
+        return
+    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
+    try:
+        yield
+    finally:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+
+
 def _run_gefcom(python: Path, gefcom_path: Path, config_path: Path, output_dir: str, log_path: Path) -> float:
     cmd = [str(python), "-m", "src.evaluation.run_comparison", "--config", str(config_path),
            "--folds", "development", "--baseline", "none", "--skip-stats", "--output-dir", output_dir]
     start = time.perf_counter()
     try:
-        proc = subprocess.run(cmd, cwd=gefcom_path, capture_output=True, encoding="utf-8",
-                              errors="replace", timeout=TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        raise GefcomRunError(f"run_comparison timed out after {TIMEOUT_S} s")
-    log_path.write_text(f"$ {' '.join(cmd)}\n\n--- stdout\n{proc.stdout}\n--- stderr\n{proc.stderr}",
-                        encoding="utf-8")
+        with _keep_awake():
+            proc = subprocess.run(cmd, cwd=gefcom_path, capture_output=True, encoding="utf-8",
+                                  errors="replace", timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        _write_log(log_path, cmd, exc.stdout, exc.stderr)
+        raise GefcomRunError(f"run_comparison timed out after {TIMEOUT_S} s (log: {log_path})")
+    _write_log(log_path, cmd, proc.stdout, proc.stderr)
     if proc.returncode != 0:
         tail = "\n".join(proc.stderr.strip().splitlines()[-20:])
         raise GefcomRunError(f"run_comparison exited with code {proc.returncode} (log: {log_path}):\n{tail}")
     return time.perf_counter() - start
+
+
+def _write_log(log_path: Path, cmd: list[str], stdout: str | bytes | None, stderr: str | bytes | None) -> None:
+    log_path.write_text(f"$ {' '.join(cmd)}\n\n--- stdout\n{stdout or ''}\n--- stderr\n{stderr or ''}",
+                        encoding="utf-8")
 
 
 def _parse_reports(run_dir: Path) -> tuple[float, float, float, dict[int, float]]:

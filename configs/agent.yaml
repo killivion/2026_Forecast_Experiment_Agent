@@ -4,9 +4,9 @@ gefcom_python: ../GEFCOM2014/.venv/Scripts/python.exe
 base_config: configs/dev.yaml      # relative to gefcom_path
 model: claude-sonnet-5-5
 budget:
-  experiments: 20
-  wall_minutes: 120                # fast run 1-4 min (Phase 1 proxy check) -> 20 experiments ~40-80 min
-  tokens: null
+  experiments: 20                  # proposals that passed the guardrails (the start config is not one)
+  wall_minutes: 180                # safety cap, should not bind: fast runs take 1-4 min, the heaviest configs ~10-15
+  tokens: 1500000                  # agent only, input + output; refined in Phase 3
 accept_rule:
-  noise_threshold: null            # your decision, Phase 2
-  min_month_wins: 4                # of 7 dev months
+  min_rel_improvement: 0.01        # dev loss more than 1% below the current best (NOTES.md) ...
+  min_month_wins: 4                # ... and lower in at least 4 of the 7 dev months

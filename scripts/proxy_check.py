@@ -12,7 +12,8 @@ from __future__ import annotations
 from itertools import combinations
 from typing import Any
 
-from src.tasks.gefcom import EvalResult, Tier, evaluate
+from src.search_space import month_wins
+from src.tasks.gefcom import Tier, evaluate
 
 ABLATIONS: dict[str, dict[str, Any]] = {
     "plain": {"model": {"temperature_scenarios": {"enabled": False}, "recency_half_life_years": None}},
@@ -20,11 +21,6 @@ ABLATIONS: dict[str, dict[str, Any]] = {
     "scenarios_only": {"model": {"recency_half_life_years": None}},
     "final": {},
 }
-
-
-def month_wins(a: EvalResult, b: EvalResult) -> int:
-    """Number of dev months where a's loss is lower than b's."""
-    return sum(a.fold_losses[t] < b.fold_losses[t] for t in a.fold_losses)
 
 
 def main() -> None:

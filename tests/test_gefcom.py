@@ -1,19 +1,22 @@
-"""Tests for src/tasks/gefcom.py and scripts/proxy_check.month_wins. The GEFCom subprocess is always mocked."""
+"""Tests for src/tasks/gefcom.py. The GEFCom subprocess is always mocked."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock, call
 
 import pandas as pd
 import pytest
 import yaml
 
-from scripts.proxy_check import month_wins
+from src.search_space import month_wins
 from src.tasks import gefcom
-from src.tasks.gefcom import (FAST_QUANTILES, FAST_SHIFT_DAYS, EvalResult, GefcomRunError, build_config,
+from src.tasks.gefcom import (FAST_QUANTILES, EvalResult, GefcomRunError, build_config,
                               config_hash, deep_merge, evaluate)
 
 BASE: dict[str, Any] = {
@@ -43,21 +46,31 @@ def test_deep_merge_nested_list_none_new_keys_and_no_mutation() -> None:
 
 # ---- build_config -----------------------------------------------------------------------------
 
-def test_fast_sets_grid_and_thins_shifts() -> None:
-    config = build_config(BASE, {}, "fast")
+def _shifts(config: dict[str, Any]) -> list[int]:
+    return config["model"]["temperature_scenarios"]["shift_days"]
+
+
+def test_fast_sets_grid_and_keeps_even_shifts() -> None:
+    base = copy.deepcopy(BASE)
+    base["model"]["temperature_scenarios"]["shift_days"] = list(range(-7, 8))
+    config = build_config(base, {}, "fast")
     assert config["quantiles"]["levels"] == FAST_QUANTILES
-    assert config["model"]["temperature_scenarios"]["shift_days"] == FAST_SHIFT_DAYS
-    assert BASE["model"]["temperature_scenarios"]["shift_days"] == [-10, 0, 10]  # base untouched
+    assert _shifts(config) == [-6, -4, -2, 0, 2, 4, 6]
+    assert _shifts(base) == list(range(-7, 8))  # base untouched
+
+
+def test_fast_thins_user_shift_days() -> None:
+    def thinned(days: list[int]) -> list[int]:
+        overrides = {"model": {"temperature_scenarios": {"shift_days": days}}}
+        return _shifts(build_config(BASE, overrides, "fast"))
+
+    assert thinned(list(range(-7, 8))) == [-6, -4, -2, 0, 2, 4, 6]
+    assert thinned([-3, -2, -1, 0, 1, 2, 3]) == [-2, 0, 2]
 
 
 def test_fast_leaves_shifts_when_scenarios_disabled() -> None:
-    config = build_config(BASE, SCENARIOS_OFF, "fast")
-    assert config["model"]["temperature_scenarios"]["shift_days"] == [-10, 0, 10]
-
-
-def test_fast_keeps_user_shift_days() -> None:
-    overrides = {"model": {"temperature_scenarios": {"shift_days": [-1, 1]}}}
-    assert build_config(BASE, overrides, "fast")["model"]["temperature_scenarios"]["shift_days"] == [-1, 1]
+    overrides = {"model": {"temperature_scenarios": {"enabled": False, "shift_days": [-3, -1, 0, 1]}}}
+    assert _shifts(build_config(BASE, overrides, "fast")) == [-3, -1, 0, 1]
 
 
 def test_fast_replaces_user_quantiles() -> None:
@@ -66,12 +79,13 @@ def test_fast_replaces_user_quantiles() -> None:
 
 
 def test_confirm_is_merge_with_base_quantiles() -> None:
-    overrides = {"quantiles": {"levels": [0.2, 0.8]}, "model": {"params": {"num_leaves": 7}}}
+    overrides = {"quantiles": {"levels": [0.2, 0.8]}, "model": {"params": {"num_leaves": 7},
+                 "temperature_scenarios": {"shift_days": [-3, -1, 0, 1]}}}
     expected = deep_merge(BASE, overrides)
     expected["quantiles"] = BASE["quantiles"]
     config = build_config(BASE, overrides, "confirm")
     assert config == expected
-    assert config["model"]["temperature_scenarios"]["shift_days"] == [-10, 0, 10]  # not thinned
+    assert _shifts(config) == [-3, -1, 0, 1]  # odd days not thinned in confirm
 
 
 # ---- config_hash ------------------------------------------------------------------------------
@@ -138,6 +152,7 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeGefcom:
     monkeypatch.setattr(gefcom, "SCRATCH_DIR", tmp_path / "scratch")
     runner = FakeGefcom(gefcom_path)
     monkeypatch.setattr(gefcom.subprocess, "run", runner)
+    monkeypatch.setattr(gefcom, "_keep_awake", contextlib.nullcontext)
     return runner
 
 
@@ -187,10 +202,31 @@ def test_nonzero_exit_raises_and_is_not_cached(fake: FakeGefcom) -> None:
     assert len(fake.comparison_calls) == 2
 
 
-def test_timeout_raises(fake: FakeGefcom) -> None:
+def test_timeout_raises_and_writes_log(fake: FakeGefcom) -> None:
     fake.raise_timeout = True
     with pytest.raises(GefcomRunError, match="timed out"):
         evaluate({}, "fast")
+    logs = list(gefcom.SCRATCH_DIR.glob("*.log"))
+    assert len(logs) == 1 and "run_comparison" in logs[0].read_text(encoding="utf-8")
+
+
+# ---- _keep_awake ------------------------------------------------------------------------------
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows API")
+@pytest.mark.parametrize("fails", [False, True])
+def test_keep_awake_sets_and_resets_execution_state(monkeypatch: pytest.MonkeyPatch, fails: bool) -> None:
+    kernel32 = MagicMock()
+    monkeypatch.setattr(gefcom.ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False)
+    try:
+        with gefcom._keep_awake():
+            kernel32.SetThreadExecutionState.assert_called_once_with(
+                gefcom.ES_CONTINUOUS | gefcom.ES_SYSTEM_REQUIRED | gefcom.ES_DISPLAY_REQUIRED)
+            if fails:
+                raise RuntimeError("boom")
+    except RuntimeError:
+        assert fails
+    assert kernel32.SetThreadExecutionState.call_args_list[-1] == call(gefcom.ES_CONTINUOUS)
+    assert kernel32.SetThreadExecutionState.call_count == 2
 
 
 # ---- month_wins -------------------------------------------------------------------------------
