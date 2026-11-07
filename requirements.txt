@@ -1,4 +1,4 @@
-anthropic
+anthropic==0.125.0  # newest release for Python 3.9; 1.x needs 3.10+ and changes the API
 pyyaml
 pandas
 python-dotenv

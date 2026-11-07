@@ -75,7 +75,7 @@ def test_valid_proposal_returns_none() -> None:
 # ---- Budget -----------------------------------------------------------------------------------
 
 def _budget(**kwargs: Any) -> Budget:
-    return Budget(max_experiments=10, max_wall_minutes=60, max_tokens=1000, started=0.0, **kwargs)
+    return Budget(max_experiments=10, max_wall_minutes=60, max_usd=5.0, started=0.0, **kwargs)
 
 
 def _set_clock(monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
@@ -94,7 +94,8 @@ def test_budget_experiment_limit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_budget_token_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_clock(monkeypatch, 0.0)
-    assert "token" in (_budget(tokens=1000).exhausted() or "")
+    assert _budget(usd=4.99).exhausted() is None
+    assert "API budget" in (_budget(usd=5.0).exhausted() or "")
 
 
 def test_budget_wall_time_limit(monkeypatch: pytest.MonkeyPatch) -> None:

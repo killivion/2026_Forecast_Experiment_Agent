@@ -5,13 +5,15 @@
 - The LLM proposes changes, and Python code decides: the accept rule, the budget and the leakage guards are all in code, not in the prompt.
 - Searchers speak in flat, named parameters (`src/search_space.py`). `to_overrides` turns them into GEFCom's nested config, so things outside the space (folds, quantile grid, data) can't even be expressed.
 - The agent loop uses the plain Anthropic SDK with tool use, no framework.
+- **One experiment core for both searchers** (`src/tools.py`): guardrails → duplicate check → fast-tier evaluation → accept rule → log. The agent reaches it through `tool_use` blocks; random search calls the same functions directly. So the only difference between the searchers is how the next proposal is chosen.
+- **Run log** `runs/<run_id>/log.jsonl` (format in `src/logging_utils.py`): start, experiment (id 0 = start config), rejected, error, llm_call, finish. The notebook and the final evaluation read only this.
 
 ## Decisions
 | Decision | Why |
 |---|---|
 | GEFCom as a subprocess, not a package | The agent can't change the evaluation code, and other tasks only need an `evaluate(config)` adapter |
 | Phase 1 = config-space only | Safe and fast. Code-writing comes later (Phase 8) |
-| No agent framework | A ~150-line loop I can explain line by line |
+| No agent framework | A ~110-line loop I can explain line by line |
 | Sonnet as the agent model | Cheap and good at tool use |
 | Two tiers: **fast** (9 quantiles, every second scenario shift day) for search, **confirm** (dev.yaml's 20 quantiles) for checking | A full dev run takes ~6 min; the fast tier is ~1.6–2.7× faster. The fast grid keeps 0.05/0.95 because GEFCom's coverage metric looks those levels up by value. Even shift days keep 0 (the unshifted scenario) and the window width |
 | The tier owns the quantile grid; the fast tier keeps even shift days of any shift list | An override can't break the coverage metric, and a window-width experiment keeps its width in both tiers (dev.yaml's `[-7..7]` becomes `[-6,-4,...,6]`, exactly what the proxy check validated) |
@@ -21,6 +23,10 @@
 | Cache key = GEFCom git commit + tier + merged config, stored as JSON in `runs/cache/` | The same config never runs twice; a code change in GEFCom invalidates old results automatically. Uncommitted GEFCom edits are **not** detected |
 | Failed runs raise `GefcomRunError` and are never cached; 30 min timeout | The agent sees the error text as the tool result; a hung run can't block a search |
 | The adapter keeps Windows awake while GEFCom runs (`SetThreadExecutionState`, system + display required) | Windows doesn't count CPU load as activity: an unattended laptop goes into Modern Standby and suspends the run (see Runtime findings) |
+| Final evaluation (`gefcom.evaluate_final`, `scripts/final_eval.py`): default.yaml + the best config's overrides, 99 quantiles, holdout or extended folds, cached per folds, 12 h timeout | The once-only score on folds no searcher saw; the searchers can't reach it (`tools.py` only calls the fast tier). The human row (GEFCom's final model, no overrides) runs first and must reproduce 6.79 on the holdout |
+| Dev vs. holdout compared as improvement over the human row, within each column | The search's dev loss is fast tier (9 quantiles), holdout and extended are 99 quantiles; a relative comparison is scale-free and needs no extra 99-quantile dev runs |
+| `compute_minutes` (sum of experiment runtimes) next to `wall_minutes` | Searches share the cache, so later ones are faster in wall time; summed runtimes don't depend on the order of the searches |
+| Searchers' window ±6 vs. the human ±7 | The window is even only (fast-tier rule), so the space contains the human recipe up to one shift day |
 
 ## Measurements
 - **Dev run (Phase 0):** `configs/dev.yaml` with 20 quantiles and 7 development folds takes about **6–7 min** (370 s and 463 s in two runs; the slower one overlapped with a test run).
@@ -84,7 +90,40 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 - A rejected proposal is not run and uses no experiment budget. The loop logs it, and the report counts the leakage ones.
 - Second line of defence: the flat space can't express folds or quantiles, and the adapter always passes `--folds development`.
 
-**Budget** (`guardrails.Budget`, values in `configs/agent.yaml`): 20 experiments (proposals that passed the guardrails; the start config isn't one), 180 min wall time as a safety cap that should not bind, 1.5M tokens for the agent (refined in Phase 3). Limits are checked between experiments, so a search can overrun the wall-time cap by at most one run (30 min timeout). The heaviest config (600 trees, depth 7, recency, ±14 days, all dynamics) is estimated at ~15 min in the fast tier, under the timeout.
+**Budget** (`guardrails.Budget`, values in `configs/agent.yaml`): 20 experiments (proposals that passed the guardrails; the start config isn't one), 180 min wall time as a safety cap that should not bind, $5 of API spend for the agent (~$1–2 expected per search). The spend cap replaced a token cap: with prompt caching most input tokens are cache reads at a tenth of the price, so 1.5M tokens would have bound at about $1. Limits are checked between experiments, so a search can overrun the wall-time cap by at most one run (30 min timeout). The heaviest config (600 trees, depth 7, recency, ±14 days, all dynamics) is estimated at ~15 min in the fast tier, under the timeout.
+
+## Agent tools (Phase 3, step 1)
+| tool | input | design choice |
+|---|---|---|
+| `describe_task` | none | States the problem, metric, what is known at forecast time and the rules, but not which settings helped before, so the agent has to find out |
+| `get_search_space` | none | Generated from `SEARCH_SPACE`, so the agent's view can't drift from what the guardrails enforce |
+| `run_experiment` | `changes`, `hypothesis`, `expected_change_pct` | `changes` is a free-form object on purpose: the guardrails, not the schema, enforce the space, so leak attempts stay visible and countable. The required numeric prediction makes self-correction measurable (prediction vs. outcome) |
+| `get_history` | none | Compact rows (changes, loss, coverage, accepted, hypothesis), so the agent can re-read its own reasoning |
+| `finish` | `best_run_id`, `rationale` | The agent names a best run, but the accept rule's best is what gets evaluated; a mismatch is logged as a finding |
+
+- **Tool results** show the change vs. the best in %, the months it beat the best, month losses by name ("Dec 2010"), coverage and runtime, but not whether a result came from the cache: the cache is shared across searches, and exposing it would tell a later run what an earlier one tried.
+- **Duplicates are rejected without budget:** re-running a known config teaches nothing.
+- **No temperature or seed for the agent:** Claude Sonnet 5.5 rejects non-default `temperature` (from API version 2026-10-21 every model does), so the 3 agent runs differ only by sampling variation. Random-search seeds are real seeds.
+- **Anthropic SDK 0.125.0 on Python 3.9:** the newest SDK for Python 3.9 (1.x needs 3.10+). It already has the request parameters the loop needs.
+
+## Agent loop (Phase 3, step 2: `src/agent.py`, not run yet)
+- **Manual loop** (`client.messages.create` until `finish`), not the SDK's tool runner: the harness has to check the budgets between turns and price every call.
+- **Append-only history:** every response is appended unchanged (current Claude models tie thinking blocks to the unedited conversation). All tool results of a turn go back in one user message.
+- **Settings:** Claude Sonnet 5.5, effort `high` (the decisions are what is measured), adaptive thinking with `display: summarized` so the reasoning summaries land in the log for the notebook trace, prompt caching on the growing conversation (`cache_control` on the request). Requests are streamed with `max_tokens` 64000, so a long thinking turn can't hit the cap or an HTTP timeout. Tool inputs are tiny, so no eager input streaming.
+- **Stopping:** the agent calls `finish`; or a budget runs out, then it gets one more turn with "call finish now"; or it ends a turn without a tool call, refuses or hits `max_tokens`. If it never calls `finish`, the harness does, with the reason in the log. The accept rule's best is the result either way.
+- **API errors:** only transient ones (connection, 429, 5xx, after the SDK's 5 retries) end a search normally. A 400 or 401 crashes loudly, so a broken run can't look like a finished one.
+- **Failed GEFCom runs** use budget, show up in `get_history` and count as duplicates afterwards, so a config that timed out (30 min) can't be retried.
+- **No refusal fallback to another model:** the API's server-side fallback would switch models mid-search and blur "Sonnet vs. random". A refusal ends the search and is logged.
+- **`--seed` only labels the run** (no API seed, no temperature), `--budget N` overrides the experiment budget for test runs.
+
+## Random search (Phase 4: `src/random_search.py`)
+- Every sample is a full config drawn independently from `SEARCH_SPACE`: ints uniform on their step grid, floats uniform, log-uniform for the four log-scale parameters, bool and choice uniform, each temperature-dynamics feature in or out at 50%, nullable parameters null at 50%.
+- It goes through the same `tools.run_experiment` as the agent, as changes against the current best, so same guardrails, duplicate check, accept rule, budget and log. Its best is the accept rule's best, not its lowest-loss sample.
+- The seed alone fixes the samples; with the shared cache a rerun of a seed costs no GEFCom time. Rejected samples use no budget; 100 rejections in a row end the search.
+
+**Fairness agent vs. random search.** Same space, start config, guardrails, duplicate check, accept rule, experiment budget and log. Asymmetries, stated rather than hidden: the $5 cap and the LLM's latency in the wall clock apply to the agent only (neither should bind), and the agent sees per-month losses and the accept reason, which random search ignores by design. That information is what the LLM is supposed to exploit.
+
+**Final evaluation runs only named searches** (`--runs` is required): `runs/` also holds `--budget 3` test runs and early-stopped searches, and `stop_reason` is a column of `results/summary.csv`, so an early-stopped search can't pass as a normal result.
 
 ## Is the LLM doing real work? (purpose check, 2026-11-07)
 Goal: prove I can build agentic AI where the LLM does real work in a loop (decide, act, see the result, correct itself), unlike the BESS analyst, where the forecast and the MILP do the hard work and the LLM orchestrates and explains.

@@ -23,13 +23,15 @@ EVALUATION = re.compile(r"fold|holdout|extended|backtest|test_task", re.IGNORECA
 
 @dataclass(frozen=True)
 class Rejection:
-    category: Literal["leakage", "invalid"]
+    category: Literal["leakage", "invalid", "duplicate"]  # "duplicate" is set by tools.run_experiment
     reason: str
 
 
 def check_proposal(changes: dict[str, Any], current: dict[str, Any]) -> Rejection | None:
     """changes: the searcher's proposed parameter values; current: the full
     parameter set of the current best config."""
+    if not isinstance(changes, dict):  # LLM JSON can be anything
+        return Rejection("invalid", "changes must be an object mapping parameter names to values.")
     text = json.dumps(changes)
     if ORACLE.search(text):
         return Rejection("leakage", "the observed ('actual') temperature of the forecast month is not known a month "
@@ -77,12 +79,13 @@ def _check_value(param: Param, value: Any) -> str | None:
 @dataclass
 class Budget:
     """Hard limits for one search. The caller increments experiments (every
-    proposal that passed the guardrails) and tokens (agent only)."""
+    proposal that passed the guardrails) and usd (agent only: API spend; a token
+    cap would mostly count cache reads, which cost a tenth)."""
     max_experiments: int
     max_wall_minutes: float
-    max_tokens: int
+    max_usd: float
     experiments: int = 0
-    tokens: int = 0
+    usd: float = 0.0
     started: float = field(default_factory=time.monotonic)
 
     def exhausted(self) -> str | None:
@@ -92,6 +95,6 @@ class Budget:
         minutes = (time.monotonic() - self.started) / 60
         if minutes >= self.max_wall_minutes:
             return f"wall-time budget used ({minutes:.0f}/{self.max_wall_minutes:g} min)"
-        if self.tokens >= self.max_tokens:
-            return f"token budget used ({self.tokens}/{self.max_tokens})"
+        if self.usd >= self.max_usd:
+            return f"API budget used (${self.usd:.2f}/${self.max_usd:.2f})"
         return None
