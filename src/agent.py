@@ -6,11 +6,10 @@ when the agent calls finish, ends a turn without a tool call, or a budget runs
 out (then it gets one more turn to call finish). Either way the accept rule's
 best is the result.
 
-Usage: python -m src.agent --seed 0   (ANTHROPIC_API_KEY in .env)
+Usage: python main.py --searcher agent --seed 0   (ANTHROPIC_API_KEY in .env)
 """
 from __future__ import annotations
 
-import argparse
 import json
 from datetime import datetime
 from typing import Any, cast
@@ -120,14 +119,3 @@ def _account(state: tools.SearchState, response: Message, prices: dict[str, floa
     state.log.write("llm_call", **tokens, cost_usd=cost, stop_reason=response.stop_reason,
                     text=[b.text for b in response.content if b.type == "text"],
                     thinking=[b.thinking for b in response.content if b.type == "thinking"])
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=0, help="run label (no API seed exists)")
-    parser.add_argument("--budget", type=int, help="experiments (default: configs/agent.yaml)")
-    parser.add_argument("--model", help="e.g. claude-haiku-5-5 for a cheap test run (default: configs/agent.yaml)")
-    args = parser.parse_args()
-    final = run(args.seed, args.budget, args.model)
-    print(f"best: experiment {final.best_id}, dev loss {final.best.dev_loss:.3f}, "
-          f"leakage attempts blocked: {final.leakage_hits}")

@@ -7,11 +7,10 @@ an agent proposal: same guardrails, duplicate check, accept rule, budget and
 log. Only the choice of the next proposal differs, so agent vs. random search
 measures the value of the LLM's decisions.
 
-Usage: python -m src.random_search --seed 0
+Usage: python main.py --searcher random --seed 0
 """
 from __future__ import annotations
 
-import argparse
 import math
 import random
 from datetime import datetime
@@ -73,12 +72,3 @@ def run(seed: int, experiments: int | None = None) -> tools.SearchState:
     stop_reason = state.budget.exhausted() or "too many rejected samples"
     tools.finish(state, state.best_id, "random search: best by the accept rule", stop_reason=stop_reason)
     return state
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--budget", type=int, help="experiments (default: configs/agent.yaml)")
-    args = parser.parse_args()
-    final = run(args.seed, args.budget)
-    print(f"best: experiment {final.best_id}, dev loss {final.best.dev_loss:.3f}")
