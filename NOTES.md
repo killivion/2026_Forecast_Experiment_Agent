@@ -158,4 +158,15 @@ Goal: prove I can build agentic AI where the LLM does real work in a loop (decid
 - **Phase 5 cost risk:** a 99-quantile run on the 33 extended folds is roughly 25× a fast run (~1.5–2.5 h per config). Plan: holdout for every searcher's best config, extended only for the best agent, best random and the human config.
 
 ## Results
+**Random search (Phase 4, 2026-11-08):** 3 seeds, 20 experiments each, fast tier, dev folds. All three used the full budget, with no failed runs and no guardrail hits. The start config scores 8.863; my hand-tuned config (`dev.yaml`) scores 8.109 on the same tier.
+
+| seed | best by accept rule | dev loss | vs. start | vs. hand-tuned | lowest loss sampled | compute (min) |
+|---|---|---|---|---|---|---|
+| 0 | experiment 4 | 8.188 | −7.6% | +1.0% | 7.897 (experiment 9, rejected) | 46.5 |
+| 1 | experiment 15 | 8.141 | −8.1% | +0.4% | 8.141 (experiment 15) | 33.2 |
+| 2 | experiment 7 | 8.283 | −6.5% | +2.1% | 8.271 (experiment 16, rejected) | 40.6 |
+
+- **Random search gets close to the hand-tuned config but doesn't beat it.** Only one of the 60 samples scores below 8.109, so that is the bar for the agent, together with the 8.14–8.28 above.
+- **The accept rule rejected the lowest-loss sample of all 60.** Seed 0's experiment 9 (7.897) is 3.6% below the best at that point and 2.6% below the hand-tuned config, but it won only 3 of 7 months: large gains in December and January (−1.7 and −2.1), a loss in February (+1.4) and a near tie in October, which decided it. A gain carried by two winter months is what the month rule is meant to stop, but a near tie counts as a full month. **The rule stays as fixed before these results:** changing it now would tune it on them, and agent and random search use the same rule either way. The lowest sample is reported as a secondary number.
+
 - **Pipeline check (2026-11-07, random search, seed 0, budget 3; not a result):** ran end to end against the real GEFCom in 7.6 min: start config (0.6 min), then 3 samples, all rejected by the accept rule (9.5% and 30.3% worse; one tie at 8.862 vs. 8.863 that won only 3 of 7 months), finish logged. The sample with recency weighting, 454 trees and depth 6 took 4.7 min. The plain model's fast dev loss (8.863) is identical under two GEFCom commits, so GEFCom's TabPFN commit didn't change our model; the cache missed only because the commit is part of its key.
