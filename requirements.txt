@@ -3,3 +3,6 @@ pyyaml
 pandas
 python-dotenv
 pytest
+matplotlib  # notebook
+ipykernel
+nbconvert

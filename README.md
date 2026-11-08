@@ -32,5 +32,6 @@ Only the agent's Claude API calls cost money, billed to the Console account of t
 - `src/agent.py`: the manual Claude tool-use loop (Phase 3 step 2: not run against the API yet)
 - `src/random_search.py`: baseline searcher with the same space, budget, accept rule and log (Phase 4)
 - `scripts/final_eval.py`: scores the named searches' best configs once on unseen folds, `python -m scripts.final_eval --folds holdout --runs <id> ...` (then `--folds extended` for the best ones), into `results/summary.csv` with a human reference row
+- `notebooks/presentation.ipynb`: the comparison, read from the run logs only (search curves, development results, what the accept rule did so far). The saved outputs show the results; re-running it needs the local `runs/` logs: `python -m nbconvert --to notebook --execute --inplace notebooks/presentation.ipynb`
 - `runs/`: per-run `log.jsonl` (gitignored)
 - `tests/`: `python -m pytest tests -q` (subprocess mocked, no GEFCom run)
