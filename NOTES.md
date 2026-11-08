@@ -107,7 +107,7 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 - **Anthropic SDK 0.125.0 on Python 3.9:** the newest SDK for Python 3.9 (1.x needs 3.10+). It already has the request parameters the loop needs.
 
 ## Agent loop (Phase 3, step 2: `src/agent.py`, not run yet)
-- **Manual loop** (`client.messages.create` until `finish`), not the SDK's tool runner: the harness has to check the budgets between turns and price every call.
+- **Manual loop** (`client.messages.stream` until `finish`), not the SDK's tool runner: the harness has to check the budgets between turns and price every call.
 - **Append-only history:** every response is appended unchanged (current Claude models tie thinking blocks to the unedited conversation). All tool results of a turn go back in one user message.
 - **Settings:** Claude Sonnet 5.5 at effort `medium` (see Cost), adaptive thinking with `display: summarized` so the reasoning summaries land in the log for the notebook trace, prompt caching on the growing conversation with a 1-hour lifetime. Requests are streamed with `max_tokens` 64000, so a long thinking turn can't hit the cap or an HTTP timeout. Tool inputs are tiny, so no eager input streaming. `--model claude-haiku-5-5` for cheap test runs.
 - **Stopping:** the agent calls `finish`; or a budget runs out, then it gets one more turn with "call finish now"; or it ends a turn without a tool call, refuses or hits `max_tokens`. If it never calls `finish`, the harness does, with the reason in the log. The accept rule's best is the result either way.
@@ -153,9 +153,9 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 Goal: prove I can build agentic AI where the LLM does real work in a loop (decide, act, see the result, correct itself), unlike the BESS analyst, where the forecast and the MILP do the hard work and the LLM orchestrates and explains.
 - **The loop:** the LLM decides what to change and why (hypothesis), runs it, sees dev loss, per-month losses, coverage, runtime and the accept/reject reason, and picks the next step or stops (`finish`). Its decisions are the only thing that differs from random search, which gets the same space, budget and accept rule. So agent vs. random search measures the value of the LLM's decisions directly.
 - **Kept honest by design:** it starts from plain, the task description won't say which features helped, the space has knobs nobody tried and known traps, and the accept rule is code, so the LLM can't declare victory.
-- **Planned for Phase 3:** every experiment carries a falsifiable prediction (expected direction and rough size), and the log records whether it came true. That makes "correcting itself" measurable as a prediction hit rate over the run, instead of only visible in a trace.
+- **Self-correction is measured:** every experiment carries a numeric prediction (`expected_change_pct`), logged next to the outcome, so "correcting itself" shows up as prediction error over the run (does it shrink, do the hypotheses follow from earlier results), not only in a trace.
 - **Limits:** it is still parameter search, not modelling code (Phase 8 is that step); 3 seeds per searcher can't separate small differences; the model may know GEFCom2014 from training data.
 - **Phase 5 cost risk:** a 99-quantile run on the 33 extended folds is roughly 25× a fast run (~1.5–2.5 h per config). Plan: holdout for every searcher's best config, extended only for the best agent, best random and the human config.
 
 ## Results
-_None yet._
+- **Pipeline check (2026-11-07, random search, seed 0, budget 3; not a result):** ran end to end against the real GEFCom in 7.6 min: start config (0.6 min), then 3 samples, all rejected by the accept rule (9.5% and 30.3% worse; one tie at 8.862 vs. 8.863 that won only 3 of 7 months), finish logged. The sample with recency weighting, 454 trees and depth 6 took 4.7 min. The plain model's fast dev loss (8.863) is identical under two GEFCom commits, so GEFCom's TabPFN commit didn't change our model; the cache missed only because the commit is part of its key.

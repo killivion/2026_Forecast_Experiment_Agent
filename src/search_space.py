@@ -119,7 +119,8 @@ def accept(candidate: EvalResult, best: EvalResult, min_rel_improvement: float, 
     improvement = (best.dev_loss - candidate.dev_loss) / best.dev_loss
     wins = month_wins(candidate, best)
     accepted = improvement > min_rel_improvement and wins >= min_month_wins
+    change = f"{improvement:.1%} lower" if improvement >= 0 else f"{-improvement:.1%} higher"
     reason = (f"{'accepted' if accepted else 'rejected'}: dev loss {candidate.dev_loss:.3f} vs best "
-              f"{best.dev_loss:.3f} ({improvement:.1%} lower, needs > {min_rel_improvement:.1%}); "
+              f"{best.dev_loss:.3f} ({change}; needs > {min_rel_improvement:.1%} lower); "
               f"won {wins}/{len(best.fold_losses)} months (needs >= {min_month_wins})")
     return Decision(accepted, reason)

@@ -72,6 +72,12 @@ BEST = _result(10.0, [10.0] * 7)
 def test_accept_needs_improvement_and_wins() -> None:
     decision = accept(_result(9.0, [9.0] * 7), BEST, 0.05, 4)
     assert decision.accepted and decision.reason.startswith("accepted") and "7/7" in decision.reason
+    assert "(10.0% lower;" in decision.reason
+
+
+def test_reason_says_higher_for_a_worse_candidate() -> None:
+    decision = accept(_result(11.0, [11.0] * 7), BEST, 0.05, 4)  # read by the agent: no "-10.0% lower"
+    assert not decision.accepted and "(10.0% higher;" in decision.reason and "0/7" in decision.reason
 
 
 def test_accept_rejects_improvement_exactly_at_threshold() -> None:

@@ -2,7 +2,7 @@
 
 An LLM agent that runs the modelling loop on the GEFCom2014 load-forecasting harness: it states a hypothesis, changes the config, runs a backtest on the development folds, keeps or drops the change, and stops when the budget runs out. The best config is then scored once on the holdout and extended folds, and compared against random search and my own hand-tuned experiment log.
 
-**Status:** code for Phases 2–5 is in place and tested with GEFCom mocked: a search space of 11 parameters starting from GEFCom's plain model, guardrails that block oracle and fold leaks, an accept rule (more than 1% lower dev loss and at least 4 of 7 months better), one experiment core shared by the agent and random search, and the once-only final evaluation. Nothing has been searched yet: next is the agent's first real run (budget 3), then the searches. See [PLAN.md](PLAN.md); decisions and their reasons are in [NOTES.md](NOTES.md).
+**Status:** code for Phases 2–5 is in place and tested with GEFCom mocked: a search space of 11 parameters starting from GEFCom's plain model, guardrails that block oracle and fold leaks, an accept rule (more than 1% lower dev loss and at least 4 of 7 months better), one experiment core shared by the agent and random search, and the once-only final evaluation. A 3-experiment random search ran end to end against the real GEFCom (pipeline check, not a result). Next: the three random searches (seeds 0–2), then the agent's first API run (budget 3, Haiku), then the Sonnet searches. See [PLAN.md](PLAN.md); decisions and their reasons are in [NOTES.md](NOTES.md).
 
 Runs keep Windows awake while GEFCom computes, but a closed lid still suspends them: keep the lid open and the charger plugged in during long searches.
 
