@@ -235,3 +235,78 @@ def test_runs_option_selects_runs_and_requires_a_finish_event(fake: FoldsFake) -
     with pytest.raises(ValueError, match="unfinished"):
         final_eval.main(["--folds", "holdout", "--runs", "random_1", "unfinished"])
     assert len(fake.comparison_calls) == 3  # human dev + human + random_1; the failing call ran nothing
+
+
+# ---- cut_search / --cut -----------------------------------------------------------------------
+
+def _cut_log(searcher: str = "random", finish_n_estimators: int = 100) -> list[dict[str, Any]]:
+    """Runtimes 600, 600, 600 (error), 600, 100 s; n_estimators = 100 * id. Best by the accept rule: 0, 1, 1, 1, 4
+    (the last, cheap experiment is accepted but sits after the expensive one)."""
+    def experiment(run_id: int, runtime_s: float, best_id: int) -> dict[str, Any]:
+        return {"time": "2026-11-08T10:00:00", "event": "experiment", "id": run_id, "runtime_s": runtime_s,
+                "params": {**START_PARAMS, "n_estimators": 100 * run_id}, "dev_loss": 9.0 - run_id,
+                "best_id": best_id, "best_dev_loss": 9.0 - best_id}
+    return [
+        {"time": "2026-11-08T10:00:00", "event": "start", "searcher": searcher, "seed": 7, "start_params": START_PARAMS},
+        experiment(0, 600, 0), experiment(1, 600, 1),
+        {"time": "2026-11-08T10:00:00", "event": "error", "id": 2, "message": "timed out", "runtime_s": 600.0},
+        experiment(3, 600, 1), experiment(4, 100, 4),
+        {"time": "2026-11-08T11:00:00", "event": "finish", "best_id": 4, "claimed_best_id": 4, "rationale": "",
+         "stop_reason": "budget", "best_params": {**START_PARAMS, "n_estimators": finish_n_estimators},
+         "best_dev_loss": 5.0, "experiments": 4, "leakage_hits": 0},
+    ]
+
+
+def test_cut_search_counts_start_config_and_errors_and_stops_on_exact_limit() -> None:
+    # 30 min = start 10 + experiment 1 10 + error 10: lands exactly on the sum, so the error still fits
+    row, params = final_eval.cut_search("random_7", _cut_log(), 30.0)
+    assert row == {"searcher": "random_cut", "seed": 7, "run_id": "random_7_cut", "best_id": 1, "dev_loss": 8.0,
+                   "experiments": 2, "stop_reason": "cut at 30.0 min of compute", "compute_minutes": 30.0,
+                   "cost_usd": 0, "leakage_hits": 0}  # start config excluded from "experiments", error included
+    assert params["n_estimators"] == 100
+
+    # just under: the error no longer fits
+    row, _ = final_eval.cut_search("random_7", _cut_log(), 29.9)
+    assert (row["experiments"], row["compute_minutes"]) == (1, 20.0)
+
+
+def test_cut_search_does_not_pick_up_cheaper_experiment_after_the_cut() -> None:
+    # experiment 3 (10 min) would exceed 35 min; experiment 4 (1.7 min) would fit but comes after the cut
+    row, params = final_eval.cut_search("random_7", _cut_log(), 35.0)
+    assert (row["best_id"], row["experiments"], row["compute_minutes"]) == (1, 2, 30.0)
+    assert params["n_estimators"] == 100
+
+
+def test_cut_search_returns_the_best_at_the_cut_not_the_last_experiment() -> None:
+    # experiment 3 fits (40 min) but was rejected: the best stays experiment 1
+    row, params = final_eval.cut_search("random_7", _cut_log(), 40.0)
+    assert (row["best_id"], row["dev_loss"], row["experiments"]) == (1, 8.0, 3)
+    assert params["n_estimators"] == 100
+    # with room for everything the last experiment is accepted
+    row, params = final_eval.cut_search("random_7", _cut_log(), 100.0)
+    assert (row["best_id"], row["experiments"], params["n_estimators"]) == (4, 4, 400)
+
+
+def test_cut_search_with_room_only_for_the_start_config() -> None:
+    row, params = final_eval.cut_search("random_7", _cut_log(), 10.0)
+    assert (row["best_id"], row["experiments"], params["n_estimators"]) == (0, 0, 0)
+
+
+def test_main_cut_adds_a_scored_cut_row_next_to_the_normal_rows(fake: FoldsFake) -> None:
+    _write_log("agent_0", _search_log("agent", 0, 500, CALLS))  # compute 4.0 min = 240 s
+    records = _cut_log(finish_n_estimators=150)
+    for record in records:  # random runtimes 100, 140, 60 s: the cut at 240 s keeps the first two
+        if record["event"] in ("experiment", "error"):
+            record["runtime_s"] = {0: 100.0, 1: 140.0, 2: 60.0, 3: 60.0, 4: 60.0}[record["id"]]
+    _write_log("random_7", records)
+
+    final_eval.main(["--folds", "holdout", "--runs", "agent_0", "random_7", "--cut", "random_7=agent_0"])
+    summary = pd.read_csv(final_eval.SUMMARY_PATH).set_index("run_id")
+    assert list(summary.index) == ["human", "agent_0", "random_7", "random_7_cut"]
+    cut = summary.loc["random_7_cut"]
+    assert (cut["searcher"], cut["seed"], cut["best_id"], cut["experiments"]) == ("random_cut", 7, 1, 1)
+    assert (cut["compute_minutes"], cut["dev_loss"], cut["cost_usd"]) == (4.0, 8.0, 0)
+    # scored with the cut's best params (100 trees: 1.0 + holdout offset), not the finished search's (150)
+    assert cut["holdout_loss"] == 2.0 and cut["holdout_coverage_90"] == COVERAGE["holdout"]
+    assert summary.loc["random_7", "holdout_loss"] == 2.5 and summary.loc["random_7", "experiments"] == 4
+    assert summary.loc["agent_0", "holdout_loss"] == 6.0

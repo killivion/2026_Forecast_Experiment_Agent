@@ -16,7 +16,10 @@ matter); wall_minutes = finish - start (includes LLM latency, and cache hits
 from earlier searches shorten it). cost_usd = sum of the agent's logged
 per-call costs (src/agent.py prices each call with its model's prices).
 
-Usage: python -m scripts.final_eval --folds holdout|extended --runs RUN_ID [RUN_ID ...]
+--cut RANDOM_RUN=AGENT_RUN adds the equal-compute comparison: the random search
+cut at the agent's compute (cut_search), as a row of its own.
+
+Usage: python -m scripts.final_eval --folds holdout|extended --runs RUN_ID [RUN_ID ...] [--cut RANDOM_RUN=AGENT_RUN ...]
 (per config up to ~30 min on holdout, ~1.5-2.5 h on extended [estimates]; run nothing else in parallel)
 """
 from __future__ import annotations
@@ -52,13 +55,37 @@ def log_row(run_id: str, records: list[dict[str, Any]]) -> dict[str, Any]:
     """The summary columns that come from a search's log."""
     start, finish = _event(records, "start"), _event(records, "finish")
     wall = (datetime.fromisoformat(finish["time"]) - datetime.fromisoformat(start["time"])).total_seconds() / 60
-    compute = sum(r["runtime_s"] for r in records if r["event"] in ("experiment", "error")) / 60
+    compute = compute_minutes(records)
     cost = sum(r["cost_usd"] for r in records if r["event"] == "llm_call")
     return {"searcher": start["searcher"], "seed": start["seed"], "run_id": run_id, "best_id": finish["best_id"],
             "dev_loss": finish["best_dev_loss"], "experiments": finish["experiments"],
             "stop_reason": finish["stop_reason"],
             "compute_minutes": round(compute, 1), "wall_minutes": round(wall, 1), "cost_usd": round(cost, 2),
             "leakage_hits": finish["leakage_hits"]}
+
+
+def cut_search(run_id: str, records: list[dict[str, Any]], limit_minutes: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A search as if it had stopped at limit_minutes of compute (NOTES.md, cut-off rule): its summary
+    columns and the accept rule's best params among the experiments that fit, in order."""
+    spent, done = 0.0, []
+    for record in (r for r in records if r["event"] in ("experiment", "error")):
+        if spent + record["runtime_s"] / 60 > limit_minutes:
+            break
+        spent += record["runtime_s"] / 60
+        done.append(record)
+    experiments = [r for r in done if r["event"] == "experiment"]
+    last = experiments[-1]
+    params = next(r["params"] for r in experiments if r["id"] == last["best_id"])
+    row = {"searcher": f"{_event(records, 'start')['searcher']}_cut", "seed": _event(records, "start")["seed"],
+           "run_id": f"{run_id}_cut", "best_id": last["best_id"], "dev_loss": last["best_dev_loss"],
+           "experiments": len(done) - 1,  # the start config is outside the budget
+           "stop_reason": f"cut at {limit_minutes:.1f} min of compute", "compute_minutes": round(spent, 1),
+           "cost_usd": 0, "leakage_hits": 0}
+    return row, params
+
+
+def compute_minutes(records: list[dict[str, Any]]) -> float:
+    return sum(r["runtime_s"] for r in records if r["event"] in ("experiment", "error")) / 60
 
 
 def final_columns(name: str, overrides: dict[str, Any], folds: FinalFolds) -> dict[str, float]:
@@ -89,9 +116,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--folds", choices=get_args(FinalFolds), required=True)
     # Required: runs/ also holds test runs (--budget 3) and early-stopped ones, and each final run takes 0.5-2.5 h.
     parser.add_argument("--runs", nargs="+", metavar="RUN_ID", required=True, help="the searches to score")
+    parser.add_argument("--cut", nargs="+", metavar="RANDOM_RUN=AGENT_RUN", default=[],
+                        help="also score RANDOM_RUN cut at AGENT_RUN's compute (the equal-compute comparison)")
     args = parser.parse_args(argv)
     runs = finished_runs(args.runs)
     log_rows = {run_id: log_row(run_id, records) for run_id, records in runs.items()}  # fail before hours of runs
+    pairs = [pair.split("=") for pair in args.cut]
+    cut_logs = finished_runs([run_id for pair in pairs for run_id in pair])
+    cuts = [cut_search(random_run, cut_logs[random_run], compute_minutes(cut_logs[agent_run]))
+            for random_run, agent_run in pairs]
 
     # Human first: on the holdout it must reproduce GEFCom's 6.79 before hours go into the searchers' configs.
     rows = [{"searcher": "human", "run_id": "human", "dev_loss": evaluate({}, "fast").dev_loss,
@@ -99,6 +132,8 @@ def main(argv: list[str] | None = None) -> None:
     for run_id, records in runs.items():
         best_params = _event(records, "finish")["best_params"]
         rows.append({**log_rows[run_id], **final_columns(run_id, to_overrides(best_params), args.folds)})
+    for row, best_params in cuts:
+        rows.append({**row, **final_columns(row["run_id"], to_overrides(best_params), args.folds)})
     merge_summary(SUMMARY_PATH, rows)
     print(pd.read_csv(SUMMARY_PATH).to_string(index=False))
 
