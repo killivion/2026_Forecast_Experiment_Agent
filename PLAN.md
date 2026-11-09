@@ -6,6 +6,8 @@ An LLM agent runs the modelling loop on the existing GEFCom2014 harness: it stat
 Target headline for README / CV:
 > "Under a budget of N experiments, the agent reached a development loss of X (human: 8.78). On the untouched folds it scored Y vs. 6.79 for my hand-tuned model and Z for random search with the same budget. Guardrails blocked K leakage attempts."
 
+Open: the "human: 8.78" comparison doesn't hold as written. Search losses are fast tier (9 quantiles, hand-tuned config: 8.11) and 8.78 is on 99 quantiles, so the two can't be compared (NOTES.md, Decisions).
+
 The comparison against **random search** and **your own experiment log** (GEFCOM2014/README.md) is what makes this an ML project, not a demo.
 
 ## Key design decisions (decide once, write into NOTES.md)
@@ -53,8 +55,8 @@ The comparison against **random search** and **your own experiment log** (GEFCOM
 - AI use: Claude Code, almost fully delegated.
 
 ### Phase 5: Runs and final evaluation (0.5 day + run time)
-- 3 agent runs (different seeds/temperature) + 3 random-search runs, same budget (e.g. 20 experiments).
-- Best config of each run: one full 99-quantile run on holdout + extended folds (`--folds holdout`, `--folds extended`), never seen by the searchers.
+- 3 agent runs + 3 random-search runs, same budget (20 experiments). The agent runs differ only by sampling variation: the seed is a label, and Claude Sonnet 5.5 rejects a non-default `temperature`.
+- Best config of each run: one full 99-quantile run on the holdout folds (`--folds holdout`), never seen by the searchers. The extended folds (`--folds extended`, ~1.5-2.5 h per config) only for the best agent, the best random and the human config.
 - Report: dev loss vs. holdout loss per searcher (gap = validation overfitting), cost in $ and minutes, number of guardrail hits.
 - AI use: run from the terminal yourself; Claude Code for the aggregation script.
 

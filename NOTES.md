@@ -106,7 +106,7 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 - **No temperature or seed for the agent:** Claude Sonnet 5.5 rejects non-default `temperature` (from API version 2026-10-21 every model does), so the 3 agent runs differ only by sampling variation. Random-search seeds are real seeds.
 - **Anthropic SDK 0.125.0 on Python 3.9:** the newest SDK for Python 3.9 (1.x needs 3.10+). It already has the request parameters the loop needs.
 
-## Agent loop (Phase 3, step 2: `src/agent.py`, not run yet)
+## Agent loop (Phase 3, step 2: `src/agent.py`)
 - **Manual loop** (`client.messages.stream` until `finish`), not the SDK's tool runner: the harness has to check the budgets between turns and price every call.
 - **Append-only history:** every response is appended unchanged (current Claude models tie thinking blocks to the unedited conversation). All tool results of a turn go back in one user message.
 - **Settings:** Claude Sonnet 5.5 at effort `medium` (see Cost), adaptive thinking with `display: summarized` so the reasoning summaries land in the log for the notebook trace, prompt caching on the growing conversation with a 1-hour lifetime. Requests are streamed with `max_tokens` 64000, so a long thinking turn can't hit the cap or an HTTP timeout. Tool inputs are tiny, so no eager input streaming. `--model claude-haiku-5-5` for cheap test runs.
@@ -140,6 +140,8 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 | MVP: ~10 Haiku test runs, 1 Sonnet check, 3 Sonnet searches, 1 re-run buffer | **~$3–5** |
 | Optional: reward-hacking demo (1 search) + one Opus 5.5 comparison search | +~$2–3.5 |
 
+**Measured (2026-11-09):** the three Sonnet searches cost $0.019–0.040 each ($0.084 in total), because the agent stopped after 4–7 experiments and wrote only about 900–1,300 output tokens per search. The estimate above assumed 20 experiments and much more thinking output.
+
 ## Random search (Phase 4: `src/random_search.py`)
 - Every sample is a full config drawn independently from `SEARCH_SPACE`: ints uniform on their step grid, floats uniform, log-uniform for the four log-scale parameters, bool and choice uniform, each temperature-dynamics feature in or out at 50%, nullable parameters null at 50%.
 - It goes through the same `tools.run_experiment` as the agent, as changes against the current best, so same guardrails, duplicate check, accept rule, budget and log. Its best is the accept rule's best, not its lowest-loss sample.
@@ -158,6 +160,19 @@ Goal: prove I can build agentic AI where the LLM does real work in a loop (decid
 - **Phase 5 cost risk:** a 99-quantile run on the 33 extended folds is roughly 25× a fast run (~1.5–2.5 h per config). Plan: holdout for every searcher's best config, extended only for the best agent, best random and the human config.
 
 ## Results
+**Agent searches (Phase 5, 2026-11-09):** 3 runs on Sonnet 5.5, medium effort, fast tier, dev folds, budget 20 experiments. No failed runs, no rejected proposals, no leakage attempts. All three ended with the agent's own `finish` call, well before the budget ran out; the prompt allows that ("when further experiments are unlikely to beat the best").
+
+| seed | best by accept rule | dev loss | vs. start | vs. hand-tuned (8.109) | experiments used | compute (min) | cost |
+|---|---|---|---|---|---|---|---|
+| 0 | experiment 3: scenarios, recency 3 years | 8.157 | −8.0% | +0.6% | 7 of 20 | 15.1 | $0.040 |
+| 1 | experiment 3: scenarios, window ±12, recency 3 years, 2 temperature features | 8.098 | −8.6% | −0.1% | 4 of 20 | 7.1 | $0.019 |
+| 2 | experiment 3: scenarios, recency 4 years | 8.181 | −7.7% | +0.9% | 6 of 20 | 12.2 | $0.025 |
+
+- **All three runs found the two main human findings within three experiments:** scenarios first, then recency. The model may know GEFCom2014 from training data, so this doesn't show it worked them out from the results alone.
+- **Agent vs. random is close on dev loss** (8.10–8.18 vs. 8.14–8.28) at a fraction of the compute (7–15 vs. 33–47 min). Three seeds can't separate differences this small.
+- **Two runs tried the known trap** `quantile_average` (loss 9.75–9.79, coverage 0.51–0.53) and the accept rule rejected it. Seed 0 expected it to be worse (+1%) and tested it anyway; seed 2 bundled it with a wider window and expected −1%.
+- **Seed 0 stopped with two rejected configs below its best** (8.124 and 8.117, each under the 1% bar). Same accept-rule behaviour as in random search.
+
 **Random search (Phase 4, 2026-11-08):** 3 seeds, 20 experiments each, fast tier, dev folds. All three used the full budget, with no failed runs and no guardrail hits. The start config scores 8.863; my hand-tuned config (`dev.yaml`) scores 8.109 on the same tier.
 
 | seed | best by accept rule | dev loss | vs. start | vs. hand-tuned | lowest loss sampled | compute (min) |
@@ -168,5 +183,7 @@ Goal: prove I can build agentic AI where the LLM does real work in a loop (decid
 
 - **Random search gets close to the hand-tuned config but doesn't beat it.** Only one of the 60 samples scores below 8.109, so that is the bar for the agent, together with the 8.14–8.28 above.
 - **The accept rule rejected the lowest-loss sample of all 60.** Seed 0's experiment 9 (7.897) is 3.6% below the best at that point and 2.6% below the hand-tuned config, but it won only 3 of 7 months: large gains in December and January (−1.7 and −2.1), a loss in February (+1.4) and a near tie in October, which decided it. A gain carried by two winter months is what the month rule is meant to stop, but a near tie counts as a full month. **The rule stays as fixed before these results:** changing it now would tune it on them, and agent and random search use the same rule either way. The lowest sample is reported as a secondary number.
+
+- **First real API run (2026-11-09, agent on Haiku 5.5, seed 0, budget 3; not a result):** 5 API calls, $0.0016 in total (estimate was $0.01–0.03), finished by calling `finish`, no rejected proposals. Scenarios on (−6.6%, won 7 of 7 months), then recency half-life 4 years (−1.2%, 6 of 7), both accepted; a 72-hour temperature average (−0.08%) rejected. Best dev loss 8.181.
 
 - **Pipeline check (2026-11-07, random search, seed 0, budget 3; not a result):** ran end to end against the real GEFCom in 7.6 min: start config (0.6 min), then 3 samples, all rejected by the accept rule (9.5% and 30.3% worse; one tie at 8.862 vs. 8.863 that won only 3 of 7 months), finish logged. The sample with recency weighting, 454 trees and depth 6 took 4.7 min. The plain model's fast dev loss (8.863) is identical under two GEFCom commits, so GEFCom's TabPFN commit didn't change our model; the cache missed only because the commit is part of its key.
