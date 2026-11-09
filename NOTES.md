@@ -159,6 +159,21 @@ Goal: prove I can build agentic AI where the LLM does real work in a loop (decid
 - **Limits:** it is still parameter search, not modelling code (Phase 8 is that step); 3 seeds per searcher can't separate small differences; the model may know GEFCom2014 from training data.
 - **Phase 5 cost risk:** a 99-quantile run on the 33 extended folds is roughly 25× a fast run (~1.5–2.5 h per config). Plan: holdout for every searcher's best config, extended only for the best agent, best random and the human config.
 
+## Research questions and comparison rule (fixed 2026-11-09, before any cut-off number was computed)
+All three agent searches stopped on their own after 4–7 of 20 experiments, while random search used all 20. Requiring 20 from the agent would punish the behaviour we want (saving compute) and mean changing the prompt after seeing results. So the agent keeps its early stops and the budget that is compared is **compute minutes**, not experiments.
+
+1. **Can the agent do the modelling loop?** Agent's best vs. the start config and the hand-tuned config.
+2. **At the same compute, does it get further than random search?** The main comparison: agent vs. random search cut at the agent's compute.
+3. **Is more compute worth it?** Agent vs. full 20-experiment random search, which used about 3–5× as much.
+4. **Does the result hold on unseen data?** Holdout and extended, as change against the human row within each column.
+5. **Does the agent learn from its results?** Prediction error over the search, what it did after a rejection, and whether it fell for the known trap.
+
+**Cut-off rule (`final_eval.cut_search`):** seed by seed, the compute limit is agent seed *s*'s `compute_minutes` (sum of GEFCom runtimes, start config included, failed runs included, cached results at their original runtime). Walk random seed *s*'s experiments in order and stop before the first one that would exceed the limit. The cut search's config is the accept rule's best at that point. The pairing by seed number is arbitrary, since agent seeds are only labels.
+
+**Final evaluation scope:** every search's best config and every cut search's best config on the holdout. Extended folds only for the human config, the best agent and the best full random search, each chosen by dev loss, never by holdout loss.
+
+**Not done:** an all-20 agent run. It would answer "would it have found more?" but needs a changed prompt, so it could only be a secondary result; left as an optional extension.
+
 ## Results
 **Agent searches (Phase 5, 2026-11-09):** 3 runs on Sonnet 5.5, medium effort, fast tier, dev folds, budget 20 experiments. No failed runs, no rejected proposals, no leakage attempts. All three ended with the agent's own `finish` call, well before the budget ran out; the prompt allows that ("when further experiments are unlikely to beat the best").
 
