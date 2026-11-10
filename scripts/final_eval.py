@@ -1,26 +1,32 @@
 """Phase 5: score the best config of every finished search once, on folds no searcher saw.
 
 For each search named with --runs (its runs/<run_id>/log.jsonl must have a finish
-event), the accept rule's best config (finish event) goes through gefcom.evaluate_final:
-GEFCom's default.yaml (99 quantiles) on the holdout or the extended folds. A
-"human" row adds GEFCom's final model exactly as configured. Rows are merged
-into results/summary.csv by run_id, so --folds extended later fills the
-extended columns and keeps the holdout ones.
+event), the accept rule's best config (finish event) goes through gefcom.evaluate_final
+on the holdout or the extended folds, at 20 or 99 quantiles (Design v2: extended at
+20 is the primary test, holdout at 99 the secondary). A "human" row adds GEFCom's
+final model exactly as configured. Rows are merged into results/summary.csv by
+run_id, so a later call fills its own columns (e.g. extended20_loss) and keeps the
+others. Every scored config's per-month losses go to results/months.csv, for the
+paired month-level test against the human row.
 
 dev_loss is the fast-tier loss the search saw (9 quantiles; human row:
-evaluate({}, "fast")), the holdout / extended columns use 99 quantiles, so
-compare losses within a column, e.g. as improvement over the human row.
+evaluate({}, "fast")); the final columns use their own grid, so compare losses
+within a column, e.g. as improvement over the human row.
 compute_minutes = sum of the experiments' GEFCom runtimes (a cached result
 counts with its original runtime, so the order of the searches doesn't
 matter); wall_minutes = finish - start (includes LLM latency, and cache hits
-from earlier searches shorten it). cost_usd = sum of the agent's logged
-per-call costs (src/agent.py prices each call with its model's prices).
+from earlier searches shorten it). cost_usd = sum of the logged per-call costs
+of the LLM searchers.
 
---cut RANDOM_RUN=AGENT_RUN adds the equal-compute comparison: the random search
-cut at the agent's compute (cut_search), as a row of its own.
+--cut SEARCH_RUN=AGENT_RUN adds the equal-compute comparison: SEARCH_RUN cut at
+AGENT_RUN's compute (cut_search), as a row of its own ("<searcher>_cut").
+--experiment RUN_ID:ID adds one experiment's config as a row ("<searcher>_experiment"),
+e.g. the lowest dev loss the accept rule rejected.
 
-Usage: python -m scripts.final_eval --folds holdout|extended --runs RUN_ID [RUN_ID ...] [--cut RANDOM_RUN=AGENT_RUN ...]
-(per config up to ~30 min on holdout, ~1.5-2.5 h on extended [estimates]; run nothing else in parallel)
+Usage: python -m scripts.final_eval --folds holdout|extended --quantiles 20|99 --runs RUN_ID [RUN_ID ...]
+       [--cut SEARCH_RUN=AGENT_RUN ...] [--experiment RUN_ID:ID ...]
+(per config ~75 min on the holdout at 99 quantiles [measured: human row]; extended at 20 quantiles
+roughly the same [estimate: 5x the months, a fifth of the quantiles]; run nothing else in parallel)
 """
 from __future__ import annotations
 
@@ -34,12 +40,14 @@ import pandas as pd
 
 from src.logging_utils import RUNS_DIR, read_log
 from src.search_space import to_overrides
-from src.tasks.gefcom import REPO_ROOT, FinalFolds, evaluate, evaluate_final
+from src.tasks.gefcom import REPO_ROOT, FinalFolds, FinalQuantiles, evaluate, evaluate_final
 
 SUMMARY_PATH = REPO_ROOT / "results" / "summary.csv"
-COLUMNS = ["searcher", "seed", "run_id", "best_id", "dev_loss", "holdout_loss", "holdout_coverage_90",
-           "extended_loss", "extended_coverage_90", "experiments", "stop_reason", "compute_minutes", "wall_minutes",
-           "cost_usd", "leakage_hits"]
+MONTHS_PATH = REPO_ROOT / "results" / "months.csv"
+FINAL_COLUMNS = [f"{folds}{q}_{metric}" for folds in get_args(FinalFolds) for q in get_args(FinalQuantiles)
+                 for metric in ("loss", "coverage_90")]
+COLUMNS = ["searcher", "seed", "run_id", "best_id", "dev_loss", *FINAL_COLUMNS, "experiments", "stop_reason",
+           "compute_minutes", "wall_minutes", "cost_usd", "leakage_hits"]
 
 
 def finished_runs(run_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -76,24 +84,40 @@ def cut_search(run_id: str, records: list[dict[str, Any]], limit_minutes: float)
     experiments = [r for r in done if r["event"] == "experiment"]
     last = experiments[-1]
     params = next(r["params"] for r in experiments if r["id"] == last["best_id"])
+    cost = sum(r["cost_usd"] for r in records if r["event"] == "llm_call")  # an LLM plan is paid before any cut
     row = {"searcher": f"{_event(records, 'start')['searcher']}_cut", "seed": _event(records, "start")["seed"],
            "run_id": f"{run_id}_cut", "best_id": last["best_id"], "dev_loss": last["best_dev_loss"],
            "experiments": len(done) - 1,  # the start config is outside the budget
            "stop_reason": f"cut at {limit_minutes:.1f} min of compute", "compute_minutes": round(spent, 1),
-           "cost_usd": 0, "leakage_hits": 0}
+           "cost_usd": round(cost, 2), "leakage_hits": 0}
     return row, params
+
+
+def experiment_row(run_id: str, records: list[dict[str, Any]], experiment_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One experiment of a search as a row of its own, with its params."""
+    start = _event(records, "start")
+    record = next(r for r in records if r["event"] == "experiment" and r["id"] == experiment_id)
+    row = {"searcher": f"{start['searcher']}_experiment", "seed": start["seed"], "run_id": f"{run_id}_e{experiment_id}",
+           "best_id": experiment_id, "dev_loss": record["dev_loss"],
+           "stop_reason": f"experiment {experiment_id}, accepted: {record['accepted']}"}
+    return row, record["params"]
 
 
 def compute_minutes(records: list[dict[str, Any]]) -> float:
     return sum(r["runtime_s"] for r in records if r["event"] in ("experiment", "error")) / 60
 
 
-def final_columns(name: str, overrides: dict[str, Any], folds: FinalFolds) -> dict[str, float]:
-    """evaluate_final, printed as progress (a run can take hours), as summary columns."""
-    result = evaluate_final(overrides, folds)
+def final_columns(name: str, overrides: dict[str, Any], folds: FinalFolds, quantiles: FinalQuantiles,
+                  months: list[dict[str, Any]]) -> dict[str, float]:
+    """evaluate_final, printed as progress (a run can take hours), as summary columns; appends the
+    per-month losses to months."""
+    result = evaluate_final(overrides, folds, quantiles)
     took = "cached" if result.cached else f"{result.runtime_s / 60:.0f} min"
-    print(f"{name}: {folds} loss {result.dev_loss:.3f}, coverage_90 {result.coverage_90:.3f} ({took})", flush=True)
-    return {f"{folds}_loss": result.dev_loss, f"{folds}_coverage_90": result.coverage_90}
+    print(f"{name}: {folds} ({quantiles} quantiles) loss {result.dev_loss:.3f}, coverage_90 {result.coverage_90:.3f}"
+          f" ({took})", flush=True)
+    months += [{"run_id": name, "folds": folds, "quantiles": quantiles, "test_task": task, "loss": loss}
+               for task, loss in sorted(result.fold_losses.items())]
+    return {f"{folds}{quantiles}_loss": result.dev_loss, f"{folds}{quantiles}_coverage_90": result.coverage_90}
 
 
 def merge_summary(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -111,31 +135,50 @@ def merge_summary(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(merged.values())
 
 
+def merge_months(path: Path, months: list[dict[str, Any]]) -> None:
+    """Long format, one row per (run_id, folds, quantiles, test_task); new rows replace old ones with that key."""
+    new = pd.DataFrame(months)
+    key = ["run_id", "folds", "quantiles", "test_task"]
+    old = pd.read_csv(path) if path.exists() else new.iloc[:0]
+    merged = pd.concat([old, new]).drop_duplicates(subset=key, keep="last")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(path, index=False)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Score each finished search's best config once on unseen folds.")
     parser.add_argument("--folds", choices=get_args(FinalFolds), required=True)
-    # Required: runs/ also holds test runs (--budget 3) and early-stopped ones, and each final run takes 0.5-2.5 h.
+    parser.add_argument("--quantiles", type=int, choices=get_args(FinalQuantiles), required=True)
+    # Required: runs/ also holds test runs (--budget 3) and early-stopped ones, and each final run takes hours.
     parser.add_argument("--runs", nargs="+", metavar="RUN_ID", required=True, help="the searches to score")
-    parser.add_argument("--cut", nargs="+", metavar="RANDOM_RUN=AGENT_RUN", default=[],
-                        help="also score RANDOM_RUN cut at AGENT_RUN's compute (the equal-compute comparison)")
+    parser.add_argument("--cut", nargs="+", metavar="SEARCH_RUN=AGENT_RUN", default=[],
+                        help="also score SEARCH_RUN cut at AGENT_RUN's compute (the equal-compute comparison)")
+    parser.add_argument("--experiment", nargs="+", metavar="RUN_ID:ID", default=[],
+                        help="also score one experiment's config of a search")
     args = parser.parse_args(argv)
+    # Everything that reads logs runs first, so a typo fails before hours of runs.
     runs = finished_runs(args.runs)
-    log_rows = {run_id: log_row(run_id, records) for run_id, records in runs.items()}  # fail before hours of runs
+    log_rows = {run_id: log_row(run_id, records) for run_id, records in runs.items()}
     pairs = [pair.split("=") for pair in args.cut]
     cut_logs = finished_runs([run_id for pair in pairs for run_id in pair])
-    cuts = [cut_search(random_run, cut_logs[random_run], compute_minutes(cut_logs[agent_run]))
-            for random_run, agent_run in pairs]
+    extras = [cut_search(search_run, cut_logs[search_run], compute_minutes(cut_logs[agent_run]))
+              for search_run, agent_run in pairs]
+    for spec in args.experiment:
+        run_id, experiment_id = spec.rsplit(":", 1)
+        extras.append(experiment_row(run_id, finished_runs([run_id])[run_id], int(experiment_id)))
 
-    # Human first: on the holdout it must reproduce GEFCom's 6.79 before hours go into the searchers' configs.
+    folds, quantiles, months = args.folds, args.quantiles, []
+    # Human first: on the holdout at 99 quantiles it must reproduce GEFCom's 6.79 before hours go into the rest.
     rows = [{"searcher": "human", "run_id": "human", "dev_loss": evaluate({}, "fast").dev_loss,
-             **final_columns("human", {}, args.folds)}]
+             **final_columns("human", {}, folds, quantiles, months)}]
     for run_id, records in runs.items():
         best_params = _event(records, "finish")["best_params"]
-        rows.append({**log_rows[run_id], **final_columns(run_id, to_overrides(best_params), args.folds)})
-    for row, best_params in cuts:
-        rows.append({**row, **final_columns(row["run_id"], to_overrides(best_params), args.folds)})
+        rows.append({**log_rows[run_id], **final_columns(run_id, to_overrides(best_params), folds, quantiles, months)})
+    for row, params in extras:
+        rows.append({**row, **final_columns(row["run_id"], to_overrides(params), folds, quantiles, months)})
     merge_summary(SUMMARY_PATH, rows)
-    print(pd.read_csv(SUMMARY_PATH).to_string(index=False))
+    merge_months(MONTHS_PATH, months)
+    print(pd.read_csv(SUMMARY_PATH).dropna(axis=1, how="all").to_string(index=False))
 
 
 def _event(records: list[dict[str, Any]], name: str) -> dict[str, Any]:

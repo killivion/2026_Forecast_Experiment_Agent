@@ -33,7 +33,8 @@ Only the agent's Claude API calls cost money, billed to the Console account of t
 - `src/no_feedback.py`: the no-feedback control, the same model planning all experiments in one call
 - `src/optuna_search.py`: Optuna TPE baseline (ask/tell through the same experiment core, 3 random start trials)
 - `src/random_search.py`: baseline searcher with the same space, budget, accept rule and log (Phase 4)
-- `scripts/final_eval.py`: scores the named searches' best configs once on unseen folds, `python -m scripts.final_eval --folds holdout --runs <id> ... [--cut <random_run>=<agent_run> ...]` (then `--folds extended` for the best ones; `--cut` adds a random search cut at the agent's compute), into `results/summary.csv` with a human reference row
+- `scripts/final_eval.py`: scores the named searches' best configs once on unseen folds, `python -m scripts.final_eval --folds extended|holdout --quantiles 20|99 --runs <id> ... [--cut <search_run>=<agent_run> ...] [--experiment <run>:<id> ...]` (`--cut` adds a search cut at the agent's compute, `--experiment` one experiment's config), into `results/summary.csv` with a human reference row, and the per-month losses into `results/months.csv` for the paired test
+- `scripts/run_v2.ps1`: the eleven Design v2 searches, one after another
 - `notebooks/presentation.ipynb`: the comparison, read from the run logs only (search curves, development results, what the accept rule did so far). The saved outputs show the results; re-running it needs the local `runs/` logs: `python -m nbconvert --to notebook --execute --inplace notebooks/presentation.ipynb`
 - `runs/`: per-run `log.jsonl` (gitignored)
 - `tests/`: `python -m pytest tests -q` (subprocess mocked, no GEFCom run)

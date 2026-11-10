@@ -4,6 +4,7 @@ pandas
 python-dotenv
 pytest
 optuna  # TPE baseline (5.0.0 tested)
+scipy  # Wilcoxon test in the notebook
 greenlet<3.2  # via optuna's SQLAlchemy: newer releases have no Python 3.9 wheels
 matplotlib  # notebook
 ipykernel

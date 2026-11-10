@@ -78,6 +78,7 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FoldsFake:
     monkeypatch.setattr(gefcom, "_keep_awake", contextlib.nullcontext)
     monkeypatch.setattr(final_eval, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(final_eval, "SUMMARY_PATH", tmp_path / "results" / "summary.csv")
+    monkeypatch.setattr(final_eval, "MONTHS_PATH", tmp_path / "results" / "months.csv")
     runner = FoldsFake(gefcom_path)
     monkeypatch.setattr(gefcom.subprocess, "run", runner)
     return runner
@@ -127,6 +128,27 @@ def test_final_cache_is_separate_from_search_tiers_and_per_folds(fake: FoldsFake
     assert len(fake.comparison_calls) == 4 and all(r.cached for r in second)
     # fold_losses come back with int keys, negative ones for the extended folds
     assert [(r.dev_loss, r.fold_losses) for r in second] == [(r.dev_loss, r.fold_losses) for r in first]
+
+
+def test_evaluate_final_20_uses_dev_yaml_grid_and_its_own_label(fake: FoldsFake) -> None:
+    overrides = {"quantiles": {"levels": [0.2, 0.8]}, "model": {"params": {"n_estimators": 300}}}
+    result = evaluate_final(overrides, "extended", quantiles=20)
+    expected = deep_merge(DEV_BASE, overrides)
+    expected["quantiles"] = DEV_BASE["quantiles"]
+    digest = config_hash(expected, "final20-extended", "deadbeef")
+    cmd, kwargs = fake.comparison_calls[0]
+    assert cmd[cmd.index("--output-dir") + 1] == f"agent_final20-extended_{digest}"
+    assert yaml.safe_load(Path(cmd[cmd.index("--config") + 1]).read_text()) == expected
+    assert kwargs["timeout"] == FINAL_TIMEOUT_S
+    assert (result.tier, result.config_hash, result.dev_loss) == ("final", digest, 5.0)
+
+
+def test_final_20_and_99_caches_are_separate(fake: FoldsFake) -> None:
+    r99, r20 = evaluate_final({}, "holdout"), evaluate_final({}, "holdout", quantiles=20)
+    assert len(fake.comparison_calls) == 2 and r99.config_hash != r20.config_hash
+    assert sorted(p.stem.split("_")[0] for p in gefcom.CACHE_DIR.glob("*.json")) == ["final-holdout", "final20-holdout"]
+    assert evaluate_final({}, "holdout", quantiles=20).cached and evaluate_final({}, "holdout").cached
+    assert len(fake.comparison_calls) == 2
 
 
 # ---- scripts/final_eval.py --------------------------------------------------------------------
@@ -183,35 +205,37 @@ def test_compute_minutes_include_failed_runs() -> None:
     assert final_eval.log_row("random_1", _search_log("random", 1, 200, []))["cost_usd"] == 0
 
 
-def test_main_merges_holdout_then_extended_into_one_row_per_run(fake: FoldsFake) -> None:
+def test_main_merges_holdout99_then_extended20_into_one_row_per_run(fake: FoldsFake) -> None:
     logs = {"agent_0": _search_log("agent", 0, 300, CALLS), "random_1": _search_log("random", 1, 200, [])}
     for run_id, records in logs.items():
         _write_log(run_id, records)
     runs = ["--runs", "agent_0", "random_1"]
 
-    final_eval.main(["--folds", "holdout", *runs])
+    final_eval.main(["--folds", "holdout", "--quantiles", "99", *runs])
     after_holdout = pd.read_csv(final_eval.SUMMARY_PATH)
     assert list(after_holdout.columns) == final_eval.COLUMNS
     assert list(after_holdout["run_id"]) == ["human", "agent_0", "random_1"]
-    assert after_holdout["extended_loss"].isna().all()
+    assert after_holdout["holdout99_loss"].notna().all() and after_holdout["extended20_loss"].isna().all()
 
-    final_eval.main(["--folds", "extended", *runs])
+    final_eval.main(["--folds", "extended", "--quantiles", "20", *runs])
     summary = pd.read_csv(final_eval.SUMMARY_PATH).set_index("run_id")
     assert list(summary.index) == ["human", "agent_0", "random_1"]
-    # loss = n_estimators / 100 + folds offset: the human row is default.yaml's 400 trees, a run its best_params
-    assert summary[["holdout_loss", "extended_loss"]].to_dict("index") == {
-        "human": {"holdout_loss": 5.0, "extended_loss": 6.0},
-        "agent_0": {"holdout_loss": 4.0, "extended_loss": 5.0},
-        "random_1": {"holdout_loss": 3.0, "extended_loss": 4.0}}
-    assert (summary["holdout_coverage_90"] == COVERAGE["holdout"]).all()
-    assert (summary["extended_coverage_90"] == COVERAGE["extended"]).all()
+    # loss = n_estimators / 100 + folds offset: the human row is the base config's 400 trees, a run its best_params
+    assert summary[["holdout99_loss", "extended20_loss"]].to_dict("index") == {
+        "human": {"holdout99_loss": 5.0, "extended20_loss": 6.0},
+        "agent_0": {"holdout99_loss": 4.0, "extended20_loss": 5.0},
+        "random_1": {"holdout99_loss": 3.0, "extended20_loss": 4.0}}
+    assert (summary["holdout99_coverage_90"] == COVERAGE["holdout"]).all()
+    assert (summary["extended20_coverage_90"] == COVERAGE["extended"]).all()
+    unrun = [c for c in final_eval.FINAL_COLUMNS if not c.startswith(("holdout99", "extended20"))]
+    assert summary[unrun].isna().all(axis=None)  # the other fold/quantile combinations stay empty
     # human dev loss = dev.yaml as configured in the fast tier (400 trees), run once and then cached
     assert summary.loc["human", "searcher"] == "human" and summary.loc["human", "dev_loss"] == 4.0
     assert summary.loc["human", ["seed", "best_id", "experiments", "stop_reason", "compute_minutes", "wall_minutes",
                                  "cost_usd", "leakage_hits"]].isna().all()
     assert fake.folds_run() == ["development"] + ["holdout"] * 3 + ["extended"] * 3
     assert {path.stem.split("_")[0] for path in gefcom.CACHE_DIR.glob("*.json")} == {
-        "fast", "final-holdout", "final-extended"}
+        "fast", "final-holdout", "final20-extended"}
 
     for run_id, records in logs.items():
         for column, value in final_eval.log_row(run_id, records).items():
@@ -219,9 +243,56 @@ def test_main_merges_holdout_then_extended_into_one_row_per_run(fake: FoldsFake)
                 assert summary.loc[run_id, column] == value, (run_id, column)
 
 
+def test_months_csv_is_long_format_and_a_rerun_replaces_its_rows(fake: FoldsFake) -> None:
+    _write_log("agent_0", _search_log("agent", 0, 300, CALLS))
+    final_eval.main(["--folds", "holdout", "--quantiles", "99", "--runs", "agent_0"])
+    months = pd.read_csv(final_eval.MONTHS_PATH)
+    assert list(months.columns) == ["run_id", "folds", "quantiles", "test_task", "loss"]
+    assert len(months) == 2 * len(TASKS["holdout"])  # human + agent_0
+    agent = months[months["run_id"] == "agent_0"]
+    assert set(agent["folds"]) == {"holdout"} and set(agent["quantiles"]) == {99}
+    assert list(agent["test_task"]) == list(TASKS["holdout"]) and (agent["loss"] == 4.0).all()
+
+    # another fold/quantile adds rows; a rerun of the first with a changed best config replaces, not duplicates
+    final_eval.main(["--folds", "extended", "--quantiles", "20", "--runs", "agent_0"])
+    total = 2 * (len(TASKS["holdout"]) + len(TASKS["extended"]))
+    assert len(pd.read_csv(final_eval.MONTHS_PATH)) == total
+    (final_eval.RUNS_DIR / "agent_0" / "log.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in _search_log("agent", 0, 500, CALLS)), encoding="utf-8")
+    final_eval.main(["--folds", "holdout", "--quantiles", "99", "--runs", "agent_0"])
+    months = pd.read_csv(final_eval.MONTHS_PATH)
+    assert len(months) == total
+    holdout = months[months["folds"] == "holdout"].set_index("run_id")["loss"]
+    assert (holdout["agent_0"] == 6.0).all() and (holdout["human"] == 5.0).all()  # new replaced old
+    kept = months[(months["run_id"] == "agent_0") & (months["folds"] == "extended")]["loss"]
+    assert (kept == 5.0).all()  # other keys untouched
+
+
+def test_main_experiment_adds_a_scored_experiment_row(fake: FoldsFake) -> None:
+    _write_log("agent_0", _search_log("agent", 0, 500, CALLS))
+    final_eval.main(["--folds", "holdout", "--quantiles", "99", "--runs", "agent_0", "--experiment", "agent_0:1"])
+    summary = pd.read_csv(final_eval.SUMMARY_PATH).set_index("run_id")
+    assert list(summary.index) == ["human", "agent_0", "agent_0_e1"]
+    row = summary.loc["agent_0_e1"]
+    assert (row["searcher"], row["seed"], row["best_id"], row["dev_loss"]) == ("agent_experiment", 0, 1, 8.8)
+    assert row["stop_reason"] == "experiment 1, accepted: False"
+    assert row["holdout99_loss"] == 4.0  # experiment 1's params (300 trees), not the best config's 500
+    assert summary.loc["agent_0", "holdout99_loss"] == 6.0
+    assert "agent_0_e1" in set(pd.read_csv(final_eval.MONTHS_PATH)["run_id"])
+
+
+def test_quantiles_option_is_required_and_limited_to_20_or_99(fake: FoldsFake) -> None:
+    _write_log("agent_0", _search_log("agent", 0, 300, CALLS))
+    for argv in (["--folds", "holdout", "--runs", "agent_0"],
+                 ["--folds", "holdout", "--quantiles", "50", "--runs", "agent_0"]):
+        with pytest.raises(SystemExit):
+            final_eval.main(argv)
+    assert fake.comparison_calls == []
+
+
 def test_runs_option_is_required(fake: FoldsFake) -> None:
     with pytest.raises(SystemExit):
-        final_eval.main(["--folds", "holdout"])
+        final_eval.main(["--folds", "holdout", "--quantiles", "99"])
     assert fake.comparison_calls == []
 
 
@@ -230,10 +301,10 @@ def test_runs_option_selects_runs_and_requires_a_finish_event(fake: FoldsFake) -
     _write_log("random_1", _search_log("random", 1, 200, []))
     _write_log("unfinished", _search_log("agent", 2, 500, CALLS, finished=False))
 
-    final_eval.main(["--folds", "holdout", "--runs", "random_1"])
+    final_eval.main(["--folds", "holdout", "--quantiles", "99", "--runs", "random_1"])
     assert list(pd.read_csv(final_eval.SUMMARY_PATH)["run_id"]) == ["human", "random_1"]
     with pytest.raises(ValueError, match="unfinished"):
-        final_eval.main(["--folds", "holdout", "--runs", "random_1", "unfinished"])
+        final_eval.main(["--folds", "holdout", "--quantiles", "99", "--runs", "random_1", "unfinished"])
     assert len(fake.comparison_calls) == 3  # human dev + human + random_1; the failing call ran nothing
 
 
@@ -300,13 +371,21 @@ def test_main_cut_adds_a_scored_cut_row_next_to_the_normal_rows(fake: FoldsFake)
             record["runtime_s"] = {0: 100.0, 1: 140.0, 2: 60.0, 3: 60.0, 4: 60.0}[record["id"]]
     _write_log("random_7", records)
 
-    final_eval.main(["--folds", "holdout", "--runs", "agent_0", "random_7", "--cut", "random_7=agent_0"])
+    final_eval.main(["--folds", "holdout", "--quantiles", "99", "--runs", "agent_0", "random_7",
+                     "--cut", "random_7=agent_0"])
     summary = pd.read_csv(final_eval.SUMMARY_PATH).set_index("run_id")
     assert list(summary.index) == ["human", "agent_0", "random_7", "random_7_cut"]
     cut = summary.loc["random_7_cut"]
     assert (cut["searcher"], cut["seed"], cut["best_id"], cut["experiments"]) == ("random_cut", 7, 1, 1)
     assert (cut["compute_minutes"], cut["dev_loss"], cut["cost_usd"]) == (4.0, 8.0, 0)
     # scored with the cut's best params (100 trees: 1.0 + holdout offset), not the finished search's (150)
-    assert cut["holdout_loss"] == 2.0 and cut["holdout_coverage_90"] == COVERAGE["holdout"]
-    assert summary.loc["random_7", "holdout_loss"] == 2.5 and summary.loc["random_7", "experiments"] == 4
-    assert summary.loc["agent_0", "holdout_loss"] == 6.0
+    assert cut["holdout99_loss"] == 2.0 and cut["holdout99_coverage_90"] == COVERAGE["holdout"]
+    assert summary.loc["random_7", "holdout99_loss"] == 2.5 and summary.loc["random_7", "experiments"] == 4
+    assert summary.loc["agent_0", "holdout99_loss"] == 6.0
+
+
+def test_cut_search_carries_the_llm_cost_for_any_searcher() -> None:
+    records = _cut_log(searcher="agent")
+    records[1:1] = [{"time": "2026-11-08T10:00:00", "event": "llm_call", **call} for call in CALLS]
+    row, _ = final_eval.cut_search("agent_7", records, 30.0)
+    assert (row["searcher"], row["run_id"], row["cost_usd"]) == ("agent_cut", "agent_7_cut", 5.4)

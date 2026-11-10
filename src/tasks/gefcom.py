@@ -7,9 +7,9 @@ is called via subprocess on the development folds only. Results are cached per
 (GEFCom commit, tier, merged config), so the same config never runs twice.
 
 evaluate_final is the once-only evaluation the searchers never see: the
-overrides go into default.yaml (99 quantiles, no shift days dropped) and run on
-the holdout or the extended folds. Its results have tier "final" and are cached
-per folds.
+overrides go into default.yaml (99 quantiles) or dev.yaml (20 quantiles), no
+shift days dropped, and run on the holdout or the extended folds. Its results
+have tier "final" and are cached per folds and grid.
 
 Fast, confirm and final use different quantile grids: compare losses only within one tier.
 """
@@ -34,6 +34,7 @@ import yaml
 Tier = Literal["fast", "confirm"]  # search tiers: what evaluate() accepts
 ResultTier = Literal["fast", "confirm", "final"]  # "final" = evaluate_final()
 FinalFolds = Literal["holdout", "extended"]
+FinalQuantiles = Literal[20, 99]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = REPO_ROOT / "runs" / "cache"
@@ -202,12 +203,14 @@ def evaluate(overrides: dict[str, Any], tier: Tier) -> EvalResult:
                        folds="development", timeout_s=TIMEOUT_S)
 
 
-def evaluate_final(overrides: dict[str, Any], folds: FinalFolds) -> EvalResult:
-    """The once-only evaluation the searchers never see: default.yaml + overrides on the holdout or the
-    extended folds, under the confirm rules (default.yaml's 99 quantiles, no shift days dropped).
+def evaluate_final(overrides: dict[str, Any], folds: FinalFolds, quantiles: FinalQuantiles = 99) -> EvalResult:
+    """The once-only evaluation the searchers never see: overrides on the holdout or the extended folds,
+    under the confirm rules (the base config's grid, no shift days dropped). 99 quantiles: default.yaml;
+    20: dev.yaml, which differs from it only in the grid (Design v2's primary test, ~5x faster).
     The result's dev_loss is the loss on those folds."""
     settings = _settings()
-    with open(settings["gefcom_path"] / settings["final_config"], encoding="utf-8") as f:
+    config_key, label = ("final_config", f"final-{folds}") if quantiles == 99 else ("base_config", f"final20-{folds}")
+    with open(settings["gefcom_path"] / settings[config_key], encoding="utf-8") as f:
         base = yaml.safe_load(f)
-    return _run_cached(settings, build_config(base, overrides, "confirm"), label=f"final-{folds}", tier="final",
+    return _run_cached(settings, build_config(base, overrides, "confirm"), label=label, tier="final",
                        folds=folds, timeout_s=FINAL_TIMEOUT_S)
