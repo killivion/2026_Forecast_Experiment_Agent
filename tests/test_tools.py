@@ -181,3 +181,13 @@ def test_describe_task_neutral_and_has_state(state: SearchState) -> None:
     assert "scenario" not in text and "recency" not in text
     assert d["current_best"]["experiment_id"] == 0
     assert d["experiments_left"] == state.budget.max_experiments
+
+
+def test_get_search_space_offer_actual_does_not_mutate_default() -> None:
+    before = json.dumps(tools.get_search_space(), sort_keys=True)
+    offered = tools.get_search_space(True)["temperature_source"]
+    assert "actual" in offered["choices"] and "actual" in offered["description"]
+    assert json.dumps(tools.get_search_space(), sort_keys=True) == before
+    assert "actual" not in tools.get_search_space()["temperature_source"]["choices"]
+    assert "actual" not in tools.SEARCH_SPACE["temperature_source"].choices
+    assert tools.get_search_space(True)["temperature_source"]["choices"].count("actual") == 1

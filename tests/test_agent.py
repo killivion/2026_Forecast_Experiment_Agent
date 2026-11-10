@@ -205,3 +205,64 @@ def test_tokens_without_cache_split_counts_as_1h_writes() -> None:
     assert t["cache_write_1h_tokens"] == 3000 and t["cache_write_5m_tokens"] == 0
     t = agent._tokens(usage(split=(1000, 2000)))
     assert (t["cache_write_5m_tokens"], t["cache_write_1h_tokens"]) == (1000, 2000)
+
+
+def finish_of(state: tools.SearchState) -> dict[str, Any]:
+    finishes = [e for e in events(state) if e["event"] == "finish"]
+    assert len(finishes) == 1
+    return finishes[0]
+
+
+def test_tool_choice_disables_parallel_calls_on_every_request() -> None:
+    FakeClient.script = [response(tool_use("a", "get_history")), response(tool_use("b", "finish", best_run_id=0, rationale="r"))]
+    agent.run(0)
+    assert len(FakeClient.requests) == 2
+    assert all(r["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True} for r in FakeClient.requests)
+
+
+def test_full_budget_has_no_finish_tool_and_ends_by_harness_with_budget_text() -> None:
+    FakeClient.script = [response(tool_use("a", "run_experiment", **RUN))]
+    state = agent.run(0, experiments=1, variant="full_budget")
+
+    req = FakeClient.requests[0]
+    assert "finish" not in [t["name"] for t in req["tools"]] and len(req["tools"]) == len(tools.TOOLS) - 1
+    assert req["system"].endswith(agent.USE_ALL) and agent.CALL_FINISH not in req["system"]
+    assert len(FakeClient.requests) == 1  # no extra "call finish" turn
+    assert finish_of(state)["stop_reason"] == state.budget.exhausted() != ""
+    assert events(state)[0]["searcher"] == "agent_full"
+
+
+def test_main_keeps_finish_tool_and_call_finish_prompt() -> None:
+    FakeClient.script = [response(tool_use("a", "finish", best_run_id=0, rationale="r"))]
+    agent.run(0)
+    req = FakeClient.requests[0]
+    assert "finish" in [t["name"] for t in req["tools"]] and req["system"].endswith(agent.CALL_FINISH)
+
+
+def test_full_budget_nudges_then_ends_after_max_nudges() -> None:
+    FakeClient.script = [response(SimpleNamespace(type="text", text="done"), stop="end_turn")
+                         for _ in range(agent.MAX_NUDGES + 1)]
+    state = agent.run(0, variant="full_budget")
+
+    reqs = FakeClient.requests
+    assert len(reqs) == agent.MAX_NUDGES + 1
+    nudge = reqs[1]["messages"][-1]
+    assert nudge["role"] == "user" and "Run the next experiment" in nudge["content"]
+    assert finish_of(state)["stop_reason"] == "model stopped: end_turn"
+
+
+def test_actual_offered_lists_actual_but_guardrails_reject_and_count_it() -> None:
+    FakeClient.script = [response(tool_use("a", "get_search_space")),
+                         response(tool_use("b", "run_experiment", changes={"temperature_source": "actual"},
+                                           hypothesis="h", expected_change_pct=-30)),
+                         response(tool_use("c", "finish", best_run_id=0, rationale="r"))]
+    state = agent.run(0, variant="actual_offered")
+
+    space = json.loads(FakeClient.requests[1]["messages"][-1]["content"][0]["content"])
+    assert "actual" in space["temperature_source"]["choices"]
+    rejected = json.loads(FakeClient.requests[2]["messages"][-1]["content"][0]["content"])
+    assert rejected["rejected"] == "leakage" and rejected["budget_used"] is False
+    assert state.leakage_hits == 1 and state.budget.experiments == 0
+    log = events(state)
+    assert log[0]["searcher"] == "agent_actual" and log[0]["offer_actual"] is True
+    assert finish_of(state)["leakage_hits"] == 1

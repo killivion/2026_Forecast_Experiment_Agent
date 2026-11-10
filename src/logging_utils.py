@@ -2,7 +2,7 @@
 search, the final evaluation and the notebook. One JSON object per line, each
 with "time" and "event":
 
-  start       searcher, seed, model, tier, budget, accept_rule, start_params
+  start       searcher, seed, model, tier, budget, accept_rule, start_params, offer_actual
   experiment  id (0 = start config), hypothesis, expected_change_pct, changes,
               params, config_hash, dev_loss, coverage_90, fold_losses, runtime_s,
               cached, accepted, decision, best_id, best_dev_loss
@@ -10,7 +10,8 @@ with "time" and "event":
   error       id, changes, hypothesis, message, runtime_s   (GEFCom run failed; uses budget)
   llm_call    input_tokens, output_tokens, cache_read_input_tokens,
               cache_write_5m_tokens, cache_write_1h_tokens, cost_usd,
-              stop_reason, text, thinking (summaries)        (agent only)
+              stop_reason, text, thinking (summaries)        (LLM searchers only)
+  plan        experiments (the no-feedback control's whole plan, as returned)
   finish      best_id, claimed_best_id, rationale, stop_reason, best_params,
               best_dev_loss, experiments, leakage_hits
 """

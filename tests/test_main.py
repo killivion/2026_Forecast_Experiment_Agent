@@ -33,7 +33,15 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[Any, ...]]]:
 def test_dispatches_to_the_chosen_searcher(calls: list[tuple[str, tuple[Any, ...]]]) -> None:
     main.main(["--searcher", "agent", "--seed", "2", "--budget", "3", "--model", "claude-haiku-5-5"])
     main.main(["--searcher", "random", "--seed", "1"])
-    assert calls == [("agent", (2, 3, "claude-haiku-5-5")), ("random", (1, None))]
+    main.main(["--searcher", "agent", "--seed", "0", "--variant", "full_budget"])
+    assert calls == [("agent", (2, 3, "claude-haiku-5-5", "main")), ("random", (1, None)),
+                     ("agent", (0, None, None, "full_budget"))]
+
+
+def test_variant_is_rejected_for_other_searchers(calls: list[tuple[str, tuple[Any, ...]]]) -> None:
+    with pytest.raises(SystemExit):
+        main.main(["--searcher", "random", "--variant", "full_budget"])
+    assert calls == []
 
 
 def test_model_is_rejected_for_random_search(calls: list[tuple[str, tuple[Any, ...]]]) -> None:

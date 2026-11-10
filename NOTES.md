@@ -18,7 +18,7 @@
 | Two tiers: **fast** (9 quantiles, every second scenario shift day) for search, **confirm** (dev.yaml's 20 quantiles) for checking | A full dev run takes ~6 min; the fast tier is ~1.6–2.7× faster. The fast grid keeps 0.05/0.95 because GEFCom's coverage metric looks those levels up by value. Even shift days keep 0 (the unshifted scenario) and the window width |
 | The tier owns the quantile grid; the fast tier keeps even shift days of any shift list | An override can't break the coverage metric, and a window-width experiment keeps its width in both tiers (dev.yaml's `[-7..7]` becomes `[-6,-4,...,6]`, exactly what the proxy check validated) |
 | Fast and confirm losses are never compared | Different quantile grids give different loss scales. Same reason the human 8.78 (99 quantiles) is not comparable to dev.yaml's 8.43 (20 quantiles) |
-| Human reference numbers: **8.43** on the dev grid (confirm tier), **8.78** dev / **6.79** holdout on 99 quantiles | From GEFCOM2014/README.md (experiment log and ablation table). Search results are compared with 8.43; the final once-only evaluation uses 99 quantiles and is compared with 8.78 / 6.79 |
+| Human reference numbers: **8.43** on the dev grid (confirm tier), **8.78** dev / **6.79** holdout on 99 quantiles | From GEFCOM2014/README.md (experiment log and ablation table). Search results are compared with the hand-tuned config on the fast tier (8.109), since search losses are fast tier; the final evaluation compares within each column against the human row (Design v2) |
 | Failing `git rev-parse` in GEFCom is a hard error | A fallback key would let results from different GEFCom versions share a cache entry |
 | Cache key = GEFCom git commit + tier + merged config, stored as JSON in `runs/cache/` | The same config never runs twice; a code change in GEFCom invalidates old results automatically. Uncommitted GEFCom edits are **not** detected |
 | Failed runs raise `GefcomRunError` and are never cached; 30 min timeout | The agent sees the error text as the tool result; a hung run can't block a search |
@@ -109,7 +109,8 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 ## Agent loop (Phase 3, step 2: `src/agent.py`)
 - **Manual loop** (`client.messages.stream` until `finish`), not the SDK's tool runner: the harness has to check the budgets between turns and price every call.
 - **Append-only history:** every response is appended unchanged (current Claude models tie thinking blocks to the unedited conversation). All tool results of a turn go back in one user message.
-- **Settings:** Claude Sonnet 5.5 at effort `medium` (see Cost), adaptive thinking with `display: summarized` so the reasoning summaries land in the log for the notebook trace, prompt caching on the growing conversation with a 1-hour lifetime. Requests are streamed with `max_tokens` 64000, so a long thinking turn can't hit the cap or an HTTP timeout. Tool inputs are tiny, so no eager input streaming. `--model claude-haiku-5-5` for cheap test runs.
+- **One tool call per turn** (`tool_choice` with `disable_parallel_tool_use`, since 2026-11-10). The first three searches allowed parallel calls, and 4 of their 17 experiments were picked before the previous result was known (seed 0: 7 experiments from 5 decisions). That isn't the loop the project claims, so those searches are superseded (Design v2 below).
+- **Settings:** Claude Sonnet 5.5 at effort `high` (`medium` until 2026-11-10, see Cost), adaptive thinking with `display: summarized` so the reasoning summaries land in the log for the notebook trace, prompt caching on the growing conversation with a 1-hour lifetime. Requests are streamed with `max_tokens` 64000, so a long thinking turn can't hit the cap or an HTTP timeout. Tool inputs are tiny, so no eager input streaming. `--model claude-haiku-5-5` for cheap test runs.
 - **Stopping:** the agent calls `finish`; or a budget runs out, then it gets one more turn with "call finish now"; or it ends a turn without a tool call, refuses or hits `max_tokens`. If it never calls `finish`, the harness does, with the reason in the log. The accept rule's best is the result either way.
 - **API errors:** only transient ones (connection, 429, 5xx, after the SDK's 5 retries) end a search normally. A 400 or 401 crashes loudly, so a broken run can't look like a finished one.
 - **Failed GEFCom runs** use budget, show up in `get_history` and count as duplicates afterwards, so a config that timed out (30 min) can't be retried.
@@ -120,7 +121,7 @@ New best only if the fast-tier dev loss is **more than 1% lower** than the curre
 - **Who pays:** only the agent's Claude API calls cost money, billed to the Anthropic Console account that owns the API key in `.env` (prepaid credits). A claude.ai Pro plan doesn't cover the API. Random search, GEFCom runs and building the project in Claude Code cost nothing extra.
 - **What a call is:** one decision. It re-sends the whole conversation (cached) and returns thinking plus one tool call. A 20-experiment search makes ~30 calls. Output (thinking) is the biggest cost item, re-reading the cached conversation the second.
 - **Levers taken:**
-  - effort `medium` instead of `high`, because thinking output dominates the bill;
+  - effort `medium` instead of `high`, because thinking output dominates the bill (reversed 2026-11-10: the measured searches cost $0.02–0.04, so the saving was cents and less reasoning isn't worth it);
   - a 1-hour cache instead of the default 5 minutes, because a GEFCom run between two calls can take over 5 minutes, and every miss rewrites the whole prefix at 12× the read price;
   - Haiku 5.5 (about 20× cheaper) for test runs, Sonnet 5.5 only for the tracked searches;
   - a $2 cap per search in code;
@@ -172,7 +173,38 @@ All three agent searches stopped on their own after 4–7 of 20 experiments, whi
 
 **Final evaluation scope:** every search's best config and every cut search's best config on the holdout. Extended folds only for the human config, the best agent and the best full random search, each chosen by dev loss, never by holdout loss.
 
-**Not done:** an all-20 agent run. It would answer "would it have found more?" but needs a changed prompt, so it could only be a secondary result; left as an optional extension.
+**Not done:** an all-20 agent run. It would answer "would it have found more?" but needs a changed prompt, so it could only be a secondary result; left as an optional extension. (Superseded by Design v2: the `full_budget` run.)
+
+## Design v2 (fixed 2026-11-10, before any v2 run; replaces the comparison above)
+A whole-project review found that the first design can't answer its main question. The three agent searches got close to the hand-tuned config, but nothing showed that the loop did the work rather than the model's prior knowledge of GEFCom-style tuning: all three opened alike, made the same first changes and never named a month, and 16 of 17 predictions were too optimistic. Random search is also a weak opponent at the agent's compute (about 5 samples). v2 adds the controls that separate prior knowledge from learning in the loop. Nothing below may change after a v2 result is seen.
+
+**Fixes:** one tool call per turn (above); effort `high`; the three medium-effort searches are kept in the logs as v1 and are not part of the comparison. The three random searches stay valid: nothing about them changed.
+
+**Searchers** (all share the experiment core, the start config, the space, the accept rule and the budget of 20):
+
+| searcher | prior knowledge | learns from results | runs |
+|---|---|---|---|
+| `agent`: Sonnet 5.5 loop, stops when it chooses | yes | yes | 3 |
+| `no_feedback`: same model plans up to 20 configs in one call, most promising first, then they run in order (`src/no_feedback.py`). Each is a complete config relative to the start config, since without results it can't know which earlier ones were accepted; to stack ideas it repeats them | yes | no | 3 |
+| `optuna`: TPE, 3 random start trials, start config told as trial 0 (`src/optuna_search.py`) | no | yes | 3 seeds |
+| `random`: independent samples (v1 runs) | no | no | 3 seeds |
+| `agent_full`: the agent with no finish tool, uses all 20 | yes | yes | 1 |
+| `agent_actual`: the agent with `actual` listed as a `temperature_source` choice; the guardrails still block it | yes | yes | 1 |
+
+**Research questions:**
+1. **Can the agent do the modelling loop?** `agent` best vs. start and hand-tuned config (dev).
+2. **Does the loop add anything beyond prior knowledge?** `agent` vs. `no_feedback` cut at the agent's compute. This decides whether the "LLM does real work in a loop" claim holds. If the control is as good, the result is "the model knows good settings", and Phase 8 (feature code) is needed for the claim.
+3. **Does the agent beat standard optimizers at the same compute?** `agent` vs. `optuna` and `random`, each cut at the agent's compute (seed by seed, cut-off rule above).
+4. **What does a full budget buy?** `agent_full` vs. full `optuna`, `random` and `no_feedback` at 20 experiments.
+5. **Does it hold on unseen data?** Final evaluation below.
+6. **Does it learn from results?** Prediction error over the search, what follows a rejection, and whether hypotheses mention specific months or earlier results; read from the logs, not tested statistically. `expected_change_pct` is against the current best for the agent but against the start config for `no_feedback`, so their prediction errors aren't compared.
+7. **Does it take a leak when offered?** `agent_actual`: number of blocked `actual` proposals, with its reasoning from the log. The guardrails stay on; Phase 6 with the guard off is still not run.
+
+**Final evaluation (once, after every v2 search has finished):**
+- **Primary: the 33 extended months (Jan 2008–Sep 2010) at 20 quantiles** (`dev.yaml`'s grid). The holdout is 7 summer-to-autumn months, while the development months are winter, so a dev-vs-holdout gap doesn't measure overfitting. 33 months give paired month-level comparisons; 99 quantiles on 33 months would take about 6 h per config.
+- **Configs:** the human config, plus for each searcher the best config by dev loss among its seeds (`agent`, `agent_full`, `no_feedback`, `optuna`, `random`, and the cut `no_feedback`, `optuna`, `random` searches), plus random seed 0's experiment 9 (7.897, the lowest dev loss the accept rule rejected). Configs are chosen by dev loss only, never by an unseen-fold result.
+- **Test:** per config, the 33 monthly loss differences against the human config; report the mean change and a two-sided Wilcoxon signed-rank test. With this many comparisons, p-values are descriptive.
+- **Secondary: holdout at 99 quantiles** (about 75 min per config) for the human config, the best `agent`, the best `optuna` and the best `random`, so the 6.79 reference can be compared.
 
 ## Results
 **Agent searches (Phase 5, 2026-11-09):** 3 runs on Sonnet 5.5, medium effort, fast tier, dev folds, budget 20 experiments. No failed runs, no rejected proposals, no leakage attempts. All three ended with the agent's own `finish` call, well before the budget ran out; the prompt allows that ("when further experiments are unlikely to beat the best").

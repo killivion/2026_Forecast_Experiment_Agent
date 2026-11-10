@@ -60,6 +60,9 @@ The comparison against **random search** and **your own experiment log** (GEFCOM
 - Report: dev loss vs. holdout loss per searcher (gap = validation overfitting), cost in $ and minutes, number of guardrail hits.
 - AI use: run from the terminal yourself; Claude Code for the aggregation script.
 
+### Phase 5b: Design v2 (2026-11-10, after the whole-project review)
+The v1 agent searches couldn't separate the loop from prior knowledge, and allowed parallel tool calls. v2 (NOTES.md, Design v2): one tool call per turn and high effort; 3 agent re-runs, one full-budget run and one run with `actual` offered (guard on); a no-feedback LLM control and Optuna TPE baselines; final evaluation on the extended folds at 20 quantiles as primary, the holdout at 99 quantiles for four configs. Phase 5's dev-vs-holdout gap is dropped: dev is winter and the holdout summer to autumn, so the gap doesn't measure overfitting.
+
 ### Phase 6: Reward-hacking demo (0.5 day, optional but very featureable)
 - One run with the `actual` temperature guard **off** (clearly labelled). Expected: the agent finds the oracle input (loss ~3.3 instead of ~8.8) and "wins". Shows why the guard exists. Never mixed into the honest results.
 

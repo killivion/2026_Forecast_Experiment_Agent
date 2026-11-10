@@ -4,7 +4,7 @@ gefcom_python: ../GEFCOM2014/.venv/Scripts/python.exe
 base_config: configs/dev.yaml      # relative to gefcom_path
 final_config: configs/default.yaml # relative to gefcom_path; the once-only final evaluation (99 quantiles)
 model: claude-sonnet-5-5           # the tracked searches; cheap test runs: --model claude-haiku-5-5
-effort: medium                     # thinking output is the main cost; Anthropic suggests medium for multi-step tool use
+effort: high                       # medium searches cost only $0.02-0.04, so cost doesn't justify less reasoning (NOTES.md)
 # List prices, USD per million tokens. src/agent.py prices every call. Cache reads 0.1x input (Opus 5.5: 0.05x),
 # cache writes 1.25x (5 min) / 2x (1 h). Haiku 5.5 bills every token at 5x when a prompt exceeds 100K tokens.
 price_per_mtok:
@@ -15,7 +15,7 @@ price_per_mtok:
 budget:
   experiments: 20                  # proposals that passed the guardrails (the start config is not one)
   wall_minutes: 180                # safety cap, should not bind: fast runs take 1-4 min, the heaviest configs ~10-15
-  usd: 2.0                         # agent API spend per search; ~$0.6-1.2 expected (Sonnet 5.5, medium, 20 experiments)
+  usd: 2.0                         # LLM API spend per search; medium effort measured $0.02-0.04 (4-7 experiments)
 accept_rule:
   min_rel_improvement: 0.01        # dev loss more than 1% below the current best (NOTES.md) ...
   min_month_wins: 4                # ... and lower in at least 4 of the 7 dev months
