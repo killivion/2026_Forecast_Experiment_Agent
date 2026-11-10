@@ -34,7 +34,7 @@ Only the agent's Claude API calls cost money, billed to the Console account of t
 - `src/optuna_search.py`: Optuna TPE baseline (ask/tell through the same experiment core, 3 random start trials)
 - `src/random_search.py`: baseline searcher with the same space, budget, accept rule and log (Phase 4)
 - `scripts/final_eval.py`: scores the named searches' best configs once on unseen folds, `python -m scripts.final_eval --folds extended|holdout --quantiles 20|99 --runs <id> ... [--cut <search_run>=<agent_run> ...] [--experiment <run>:<id> ...]` (`--cut` adds a search cut at the agent's compute, `--experiment` one experiment's config), into `results/summary.csv` with a human reference row, and the per-month losses into `results/months.csv` for the paired test
-- `scripts/run_v2.ps1`: the eleven Design v2 searches, one after another
+- `scripts/run_v2.ps1`: the eleven Design v2 searches, one after another (rerun to resume: searches that finished with exit 0 in `runs/run_v2.log` are skipped)
 - `notebooks/presentation.ipynb`: the comparison, read from the run logs only (search curves, development results, what the accept rule did so far). The saved outputs show the results; re-running it needs the local `runs/` logs: `python -m nbconvert --to notebook --execute --inplace notebooks/presentation.ipynb`
 - `runs/`: per-run `log.jsonl` (gitignored)
 - `tests/`: `python -m pytest tests -q` (subprocess mocked, no GEFCom run)
