@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 import main
-from src import agent, random_search
+from src import agent, optuna_search, random_search
 
 
 def _state() -> SimpleNamespace:
@@ -27,6 +27,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[Any, ...]]]:
     recorded: list[tuple[str, tuple[Any, ...]]] = []
     monkeypatch.setattr(agent, "run", _record(recorded, "agent"))
     monkeypatch.setattr(random_search, "run", _record(recorded, "random"))
+    monkeypatch.setattr(optuna_search, "run", _record(recorded, "optuna"))
     return recorded
 
 
@@ -41,6 +42,18 @@ def test_dispatches_to_the_chosen_searcher(calls: list[tuple[str, tuple[Any, ...
 def test_variant_is_rejected_for_other_searchers(calls: list[tuple[str, tuple[Any, ...]]]) -> None:
     with pytest.raises(SystemExit):
         main.main(["--searcher", "random", "--variant", "full_budget"])
+    assert calls == []
+
+
+def test_dispatches_to_optuna(calls: list[tuple[str, tuple[Any, ...]]]) -> None:
+    main.main(["--searcher", "optuna", "--seed", "4", "--budget", "5"])
+    main.main(["--searcher", "optuna"])
+    assert calls == [("optuna", (4, 5)), ("optuna", (0, None))]
+
+
+def test_model_is_rejected_for_optuna(calls: list[tuple[str, tuple[Any, ...]]]) -> None:
+    with pytest.raises(SystemExit):
+        main.main(["--searcher", "optuna", "--model", "claude-haiku-5-5"])
     assert calls == []
 
 

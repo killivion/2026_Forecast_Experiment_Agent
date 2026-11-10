@@ -28,9 +28,10 @@ Only the agent's Claude API calls cost money, billed to the Console account of t
 - `src/guardrails.py`: `check_proposal` (leakage and invalid proposals, with a reason the searcher sees) and the hard `Budget`
 - `src/tools.py`: the five agent tools (schemas + handlers) and the experiment core both searchers share: guardrails, duplicate check, evaluation, accept rule, log
 - `src/logging_utils.py`: the run log `runs/<run_id>/log.jsonl` (event format in its docstring)
-- `main.py`: runs one search, `python main.py --searcher agent|no_feedback|random --seed 0 [--budget 3] [--model claude-haiku-5-5] [--variant main|full_budget|actual_offered]` (`--model` for the LLM searchers, `--variant` agent only)
+- `main.py`: runs one search, `python main.py --searcher agent|no_feedback|optuna|random --seed 0 [--budget 3] [--model claude-haiku-5-5] [--variant main|full_budget|actual_offered]` (`--model` for the LLM searchers, `--variant` agent only)
 - `src/agent.py`: the manual Claude tool-use loop, one tool call per turn; variants `full_budget` (no finish tool) and `actual_offered` (the oracle temperature listed, still blocked)
 - `src/no_feedback.py`: the no-feedback control, the same model planning all experiments in one call
+- `src/optuna_search.py`: Optuna TPE baseline (ask/tell through the same experiment core, 3 random start trials)
 - `src/random_search.py`: baseline searcher with the same space, budget, accept rule and log (Phase 4)
 - `scripts/final_eval.py`: scores the named searches' best configs once on unseen folds, `python -m scripts.final_eval --folds holdout --runs <id> ... [--cut <random_run>=<agent_run> ...]` (then `--folds extended` for the best ones; `--cut` adds a random search cut at the agent's compute), into `results/summary.csv` with a human reference row
 - `notebooks/presentation.ipynb`: the comparison, read from the run logs only (search curves, development results, what the accept rule did so far). The saved outputs show the results; re-running it needs the local `runs/` logs: `python -m nbconvert --to notebook --execute --inplace notebooks/presentation.ipynb`
