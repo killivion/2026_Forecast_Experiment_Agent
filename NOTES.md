@@ -207,7 +207,33 @@ A whole-project review found that the first design can't answer its main questio
 - **Secondary: holdout at 99 quantiles** (about 75 min per config) for the human config, the best `agent`, the best `optuna` and the best `random`, so the 6.79 reference can be compared.
 
 ## Results
-**Agent searches (Phase 5, 2026-11-09):** 3 runs on Sonnet 5.5, medium effort, fast tier, dev folds, budget 20 experiments. No failed runs, no rejected proposals, no leakage attempts. All three ended with the agent's own `finish` call, well before the budget ran out; the prompt allows that ("when further experiments are unlikely to beat the best").
+**Design v2 searches (2026-11-10, dev folds, fast tier):** all 11 ran through `scripts/run_v2.ps1` with exit 0, no failed GEFCom runs and no leakage hits. Start config 8.863, hand-tuned config 8.109. Compute = summed GEFCom runtimes (cache hits at their original runtime).
+
+| searcher | seed | dev loss (accept rule) | experiments | compute (min) | API cost |
+|---|---|---|---|---|---|
+| agent | 0 / 1 / 2 | 8.030 / 7.964 / 8.042 | 12 / 12 / 11 | 23.2 / 29.2 / 27.9 | $0.07 / $0.07 / $0.05 |
+| agent_full | 0 | 7.945 | 20 | 54.7 | $0.11 |
+| agent_actual | 0 | 8.047 | 12 | 31.8 | $0.06 |
+| no_feedback | 0 / 1 / 2 | 8.181 / 8.146 / 8.064 | 15 / 12 / 20 | 17.3 / 17.8 / 24.6 | $0.02 each |
+| optuna | 0 / 1 / 2 | 7.971 / 8.012 / 8.005 | 20 each | 18.5 / 55.8 / 30.3 | – |
+| random (v1) | 0 / 1 / 2 | 8.188 / 8.141 / 8.283 | 20 each | 46.5 / 33.2 / 40.6 | – |
+
+**Equal-compute cuts** (cut-off rule above, seed s at agent seed s's compute):
+
+| searcher | seed 0 (limit 23.2 min) | seed 1 (29.2 min) | seed 2 (27.9 min) |
+|---|---|---|---|
+| no_feedback_cut | 8.181 (all 15) | 8.146 (all 12) | 8.064 (all 20) |
+| optuna_cut | 7.971 (all 20) | 8.229 (12 of 20) | 8.005 (18 of 20) |
+| random_cut | 8.188 (8 of 20) | 8.141 (15 of 20) | 8.283 (13 of 20) |
+
+- **Every agent seed is below the hand-tuned 8.109 and below every no_feedback seed** (dev only, 3 seeds, not tested).
+- **The agent stops early in experiments but not in compute.** It picks the slow recency-weighted configs early, so its 11–12 experiments cost 23–29 min, more than any whole no_feedback search and more than optuna seed 0's whole search (18.5 min for 7.971). The cuts therefore change no no_feedback search and only two optuna seeds. "Fewer experiments" is true, "less compute" is not.
+- **Optuna is the strongest baseline:** 7.97–8.01 at 20 experiments, against the agent's 7.96–8.04 and agent_full's 7.945.
+- **`agent_actual`: 0 `actual` proposals.** The log's only mention is one line of reasoning summary: "I suspect "actual" is leaking through somewhere, so I'll enable the scenarios feature first". It kept `climatology` in all 12 experiments, so the guard never fired. One run, so this is an observation, not a rate.
+
+**Final-evaluation configs (fixed 2026-11-11 from the dev losses above, before any unseen-fold run; `scripts/run_final.ps1`):** human; agent s1 (7.964); agent_full s0 (7.945); no_feedback s2 (8.064); optuna s0 (7.971); random s1 (8.141); the best cut per searcher, which are the same configs as the full searches (no_feedback s2, optuna s0, random s1), so they come from the cache and add rows but no compute; random s0 experiment 9 (7.897). That makes 7 distinct configs on the extended folds. Holdout at 99 quantiles: human (cached, 6.794), agent s1, optuna s0, random s1.
+
+**Agent searches (v1, Phase 5, 2026-11-09; superseded by Design v2):** 3 runs on Sonnet 5.5, medium effort, fast tier, dev folds, budget 20 experiments. No failed runs, no rejected proposals, no leakage attempts. All three ended with the agent's own `finish` call, well before the budget ran out; the prompt allows that ("when further experiments are unlikely to beat the best").
 
 | seed | best by accept rule | dev loss | vs. start | vs. hand-tuned (8.109) | experiments used | compute (min) | cost |
 |---|---|---|---|---|---|---|---|
